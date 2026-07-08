@@ -307,6 +307,10 @@ def detect_channel(df):
                             "price_position": pos2,
                             "touches_upper": len(ch2_upper_touches),
                             "touches_lower": len(ch2_lower_touches),
+                            "anchors": {
+                                "upper": [ch2_a1, ch2_a2],
+                                "lower": [ch2_low_anchor],
+                            },
                         }
     
     # Current position relative to CH1
@@ -331,6 +335,10 @@ def detect_channel(df):
         "touches_lower": len(lower_touches),
         "swing_highs": swing_highs,
         "swing_lows": swing_lows,
+        "anchors": {
+            "upper": [anchor1, anchor2],
+            "lower": [(low_idx, low_price)],
+        },
     }
 
 

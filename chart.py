@@ -115,7 +115,7 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
     Draw the channel chart and save as PNG.
     Returns file path.
     """
-    view_limit = min(len(df), 300)
+    view_limit = min(len(df), 200)
     plot_df = df.iloc[-view_limit:].copy().reset_index(drop=True)
     plot_df['ds'] = pd.to_datetime(plot_df['open_time'], unit='ms')
     plot_df.set_index('ds', inplace=True)
@@ -288,28 +288,31 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
                 if 0 <= idx < view_limit:
                     ax.plot(idx, price, 'o', color='cyan', markersize=6, zorder=5)
 
-            # Info box
-            last_close = float(plot_df['close'].iloc[-1])
-            info_text = (
-                f"CH1 {direction_str}\n"
-                f"Width: {channel['width_pct']:.1f}%\n"
-                f"Touches: {channel['touches_upper']}+{channel['touches_lower']}"
-            )
-            if channel.get("breakout"):
-                info_text += f"\nBREAK {channel['breakout'].upper()}"
+            # ANCHOR POINTS — big markers showing where lines are built from
+            anchors = channel.get("anchors")
+            if anchors:
+                for idx, price in anchors.get("upper", []):
+                    if 0 <= idx < view_limit:
+                        ax.plot(idx, price, 'D', color='#FFD700', markersize=12,
+                                markeredgecolor='white', markeredgewidth=1.5, zorder=8)
+                for idx, price in anchors.get("lower", []):
+                    if 0 <= idx < view_limit:
+                        ax.plot(idx, price, 'D', color='#FFD700', markersize=12,
+                                markeredgecolor='white', markeredgewidth=1.5, zorder=8)
             ch2 = channel.get("second_channel")
             if ch2:
-                info_text += (
-                    f"\n\nCH2 {ch2['direction'].title()}\n"
-                    f"Width: {ch2['width_pct']:.1f}%\n"
-                    f"Touches: {ch2['touches_upper']}+{ch2['touches_lower']}\n"
-                    f"Price at {ch2['price_position']:.0f}%"
-                )
+                ch2_anchors = ch2.get("anchors")
+                if ch2_anchors:
+                    for idx, price in ch2_anchors.get("upper", []):
+                        if 0 <= idx < view_limit:
+                            ax.plot(idx, price, 'D', color='#FFD700', markersize=12,
+                                    markeredgecolor='white', markeredgewidth=1.5, zorder=8)
+                    for idx, price in ch2_anchors.get("lower", []):
+                        if 0 <= idx < view_limit:
+                            ax.plot(idx, price, 'D', color='#FFD700', markersize=12,
+                                    markeredgecolor='white', markeredgewidth=1.5, zorder=8)
 
-            ax.text(0.01, 0.97, info_text, transform=ax.transAxes,
-                    color='white', fontsize=9, fontweight='bold',
-                    ha='left', va='top', zorder=10,
-                    bbox=dict(boxstyle='round,pad=0.4', facecolor='#333333', alpha=0.85))
+            # Info box removed — was cluttering the chart
 
         # Watermark
         wm_x = 1 / max(view_limit - 1, 1)

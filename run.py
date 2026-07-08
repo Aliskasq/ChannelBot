@@ -9,7 +9,7 @@ from chart import draw_channel_chart
 
 symbol = sys.argv[1].upper() if len(sys.argv) > 1 else "BTC"
 interval = sys.argv[2] if len(sys.argv) > 2 else "4h"
-limit = int(sys.argv[3]) if len(sys.argv) > 3 else 300
+limit = int(sys.argv[3]) if len(sys.argv) > 3 else 200
 
 print(f"Fetching {symbol}USDT {interval} ({limit} candles)...")
 df = fetch_klines(symbol, interval, limit)
