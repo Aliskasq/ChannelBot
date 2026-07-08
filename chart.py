@@ -178,24 +178,28 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
                 swing_lo_series, type='scatter', markersize=40,
                 marker='^', color='lime', alpha=0.8))
 
-        # Predicted channel lines (yellow dashed)
-        pred = channel.get("predicted_channel")
-        if pred:
-            pred_upper = []
-            pred_lower = []
+        # Second channel (post-breakout) — orange lines
+        ch2 = channel.get("second_channel")
+        if ch2:
+            ch2_upper = []
+            ch2_lower = []
+            ch2_mid = []
             for i in range(view_limit):
-                pu = _line_price_at(pred["upper_line"]["slope"],
-                                    pred["upper_line"]["intercept"], i)
-                pl = _line_price_at(pred["lower_line"]["slope"],
-                                    pred["lower_line"]["intercept"], i)
+                pu = _line_price_at(ch2["upper_line"]["slope"],
+                                    ch2["upper_line"]["intercept"], i)
+                pl = _line_price_at(ch2["lower_line"]["slope"],
+                                    ch2["lower_line"]["intercept"], i)
                 pu = max(min(pu, _price_ceil), _price_floor)
                 pl = max(min(pl, _price_ceil), _price_floor)
-                pred_upper.append(pu)
-                pred_lower.append(pl)
+                ch2_upper.append(pu)
+                ch2_lower.append(pl)
+                ch2_mid.append(np.exp((np.log(pu) + np.log(pl)) / 2))
             extra_addplots.append(mpf.make_addplot(
-                pred_upper, color='yellow', width=1.5, linestyle='--'))
+                ch2_upper, color='#FFA500', width=2, linestyle='-'))
             extra_addplots.append(mpf.make_addplot(
-                pred_lower, color='yellow', width=1.5, linestyle='--'))
+                ch2_lower, color='#FFA500', width=2, linestyle='-'))
+            extra_addplots.append(mpf.make_addplot(
+                ch2_mid, color='#FFA500', width=0.8, linestyle='--'))
 
     # Title
     direction_str = channel["direction"].title() if channel else "No"
@@ -257,17 +261,24 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
             ax.fill_between(xs, lower_fill, upper_fill,
                             color='cyan', alpha=0.08, zorder=1)
 
-            # Predicted channel fill
-            pred = channel.get("predicted_channel")
-            if pred:
-                pred_upper_fill = [_line_price_at(pred["upper_line"]["slope"],
-                                                   pred["upper_line"]["intercept"], i)
-                                   for i in range(view_limit)]
-                pred_lower_fill = [_line_price_at(pred["lower_line"]["slope"],
-                                                   pred["lower_line"]["intercept"], i)
-                                   for i in range(view_limit)]
-                ax.fill_between(xs, pred_lower_fill, pred_upper_fill,
-                                color='yellow', alpha=0.05, zorder=1)
+            # Second channel fill (orange)
+            ch2 = channel.get("second_channel")
+            if ch2:
+                ch2_upper_fill = [_line_price_at(ch2["upper_line"]["slope"],
+                                                  ch2["upper_line"]["intercept"], i)
+                                  for i in range(view_limit)]
+                ch2_lower_fill = [_line_price_at(ch2["lower_line"]["slope"],
+                                                  ch2["lower_line"]["intercept"], i)
+                                  for i in range(view_limit)]
+                ax.fill_between(xs, ch2_lower_fill, ch2_upper_fill,
+                                color='#FFA500', alpha=0.06, zorder=1)
+                # Touch points on second channel
+                for idx, price in ch2["upper_line"]["points"]:
+                    if 0 <= idx < view_limit:
+                        ax.plot(idx, price, 'o', color='#FFA500', markersize=6, zorder=5)
+                for idx, price in ch2["lower_line"]["points"]:
+                    if 0 <= idx < view_limit:
+                        ax.plot(idx, price, 'o', color='#FFA500', markersize=6, zorder=5)
 
             # Touch point labels on channel lines
             for idx, price in channel["upper_line"]["points"]:
@@ -280,13 +291,20 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
             # Info box
             last_close = float(plot_df['close'].iloc[-1])
             info_text = (
-                f"{direction_str} Channel\n"
+                f"CH1 {direction_str}\n"
                 f"Width: {channel['width_pct']:.1f}%\n"
-                f"Touches: ↑{channel['touches_upper']} ↓{channel['touches_lower']}\n"
-                f"Price at {channel['price_position']:.0f}%"
+                f"Touches: {channel['touches_upper']}+{channel['touches_lower']}"
             )
             if channel.get("breakout"):
-                info_text += f"\n⚡ BREAKOUT {channel['breakout'].upper()}"
+                info_text += f"\nBREAK {channel['breakout'].upper()}"
+            ch2 = channel.get("second_channel")
+            if ch2:
+                info_text += (
+                    f"\n\nCH2 {ch2['direction'].title()}\n"
+                    f"Width: {ch2['width_pct']:.1f}%\n"
+                    f"Touches: {ch2['touches_upper']}+{ch2['touches_lower']}\n"
+                    f"Price at {ch2['price_position']:.0f}%"
+                )
 
             ax.text(0.01, 0.97, info_text, transform=ax.transAxes,
                     color='white', fontsize=9, fontweight='bold',
@@ -354,7 +372,7 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
             ot.set_text("")
 
         out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), file_path)
-        fig.savefig(out_path, dpi=200, bbox_inches='tight', pad_inches=0.1)
+        fig.savefig(out_path, dpi=150, bbox_inches='tight', pad_inches=0.1)
 
     except Exception as e:
         import traceback
