@@ -126,6 +126,8 @@ def detect_channel(df):
     swing_lows = find_swing_lows(df)
     smart_lows = _smart_low(df)
     smart_highs = _smart_high(df)
+    # Body bottoms for lower line placement (not wicks!)
+    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
 
     if len(swing_highs) < 2:
         return None
@@ -174,11 +176,11 @@ def detect_channel(df):
     # =============================================
     # STEP 4: Lower line — SAME SLOPE, on lowest point
     # =============================================
-    # Find the lowest smart_low in the channel span
+    # Find the lowest BODY BOTTOM in the channel span (not wicks!)
     span_start = anchor1[0]
     span_end = min(n, anchor2[0] + 20)  # extend a bit past anchor2
     
-    region_lows = smart_lows[span_start:span_end]
+    region_lows = body_bottoms[span_start:span_end]
     if len(region_lows) == 0:
         return None
     
@@ -195,7 +197,7 @@ def detect_channel(df):
     if lm >= um:
         return None
     width_pct = (um - lm) / lm * 100
-    if width_pct < 1.0 or width_pct > 60.0:
+    if width_pct < 1.0:
         return None
     
     lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
@@ -393,7 +395,7 @@ def _try_ascending_channel(df, swing_highs, swing_lows, smart_highs, smart_lows,
     if lm >= um:
         return None
     width_pct = (um - lm) / lm * 100
-    if width_pct < 1.0 or width_pct > 60.0:
+    if width_pct < 1.0:
         return None
     
     upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
