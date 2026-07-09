@@ -13,7 +13,9 @@ import pandas as pd
 
 
 def _adaptive_high(df):
-    """Adaptive peak price: high, but body_top when wick > 3x body (spike noise).
+    """Adaptive peak price: high, but body_top when:
+    - wick > 3x body (spike noise), OR
+    - wick > 10% of body_top price (long wick relative to price)
     For doji (body ≈ 0): average of high and close."""
     high = df["high"].values.astype(float)
     opn = df["open"].values.astype(float)
@@ -23,9 +25,11 @@ def _adaptive_high(df):
     upper_wick = high - body_top
     # Doji detection: body < 0.1% of price
     is_doji = body_size < close * 0.001
-    # Spike: upper wick > 3x body
+    # Spike: upper wick > 3x body OR wick > 10% of body_top
     body_safe = np.where(body_size == 0, 1e10, body_size)
-    is_spike = upper_wick > 3.0 * body_safe
+    is_spike_3x = upper_wick > 3.0 * body_safe
+    is_spike_10pct = upper_wick > body_top * 0.10
+    is_spike = is_spike_3x | is_spike_10pct
     result = high.copy()
     result = np.where(is_spike & ~is_doji, body_top, result)
     result = np.where(is_doji, (high + close) / 2.0, result)
@@ -33,7 +37,9 @@ def _adaptive_high(df):
 
 
 def _adaptive_low(df):
-    """Adaptive valley price: low, but body_bot when wick > 3x body (spike noise).
+    """Adaptive valley price: low, but body_bot when:
+    - wick > 3x body (spike noise), OR
+    - wick > 10% of body_bot price (long wick relative to price)
     For doji (body ≈ 0): average of low and close."""
     low = df["low"].values.astype(float)
     opn = df["open"].values.astype(float)
@@ -43,7 +49,9 @@ def _adaptive_low(df):
     lower_wick = body_bot - low
     is_doji = body_size < close * 0.001
     body_safe = np.where(body_size == 0, 1e10, body_size)
-    is_spike = lower_wick > 3.0 * body_safe
+    is_spike_3x = lower_wick > 3.0 * body_safe
+    is_spike_10pct = lower_wick > body_bot * 0.10
+    is_spike = is_spike_3x | is_spike_10pct
     result = low.copy()
     result = np.where(is_spike & ~is_doji, body_bot, result)
     result = np.where(is_doji, (low + close) / 2.0, result)
@@ -749,9 +757,9 @@ def _detect_channel_v3(df):
             if a2_raw[0] - a1_raw[0] < 10:
                 continue
             
-            # Anchor prices = body bottoms (10% wick rule)
-            a1_price = _anchor_price_low(df, a1_raw[0])
-            a2_price = _anchor_price_low(df, a2_raw[0])
+            # Anchor prices = ALWAYS body bottoms in algo 3
+            a1_price = float(min(df["open"].iloc[a1_raw[0]], df["close"].iloc[a1_raw[0]]))
+            a2_price = float(min(df["open"].iloc[a2_raw[0]], df["close"].iloc[a2_raw[0]]))
             a1 = (a1_raw[0], a1_price)
             a2 = (a2_raw[0], a2_price)
             
