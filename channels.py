@@ -12,72 +12,117 @@ import numpy as np
 import pandas as pd
 
 
-def _smart_high(df):
-    """If upper wick > 2x body → use body top, else use high."""
+def _adaptive_high(df):
+    """Adaptive peak price: high, but body_top when wick > 3x body (spike noise).
+    For doji (body ≈ 0): average of high and close."""
     high = df["high"].values.astype(float)
     opn = df["open"].values.astype(float)
     close = df["close"].values.astype(float)
     body_top = np.maximum(opn, close)
     body_size = np.abs(close - opn)
     upper_wick = high - body_top
+    # Doji detection: body < 0.1% of price
+    is_doji = body_size < close * 0.001
+    # Spike: upper wick > 3x body
     body_safe = np.where(body_size == 0, 1e10, body_size)
-    use_body = upper_wick > 2.0 * body_safe
-    return np.where(use_body, body_top, high)
+    is_spike = upper_wick > 3.0 * body_safe
+    result = high.copy()
+    result = np.where(is_spike & ~is_doji, body_top, result)
+    result = np.where(is_doji, (high + close) / 2.0, result)
+    return result
 
 
-def _smart_low(df):
-    """If lower wick > 2x body → use body bottom, else use low."""
+def _adaptive_low(df):
+    """Adaptive valley price: low, but body_bot when wick > 3x body (spike noise).
+    For doji (body ≈ 0): average of low and close."""
     low = df["low"].values.astype(float)
     opn = df["open"].values.astype(float)
     close = df["close"].values.astype(float)
     body_bot = np.minimum(opn, close)
     body_size = np.abs(close - opn)
     lower_wick = body_bot - low
+    is_doji = body_size < close * 0.001
     body_safe = np.where(body_size == 0, 1e10, body_size)
-    use_body = lower_wick > 2.0 * body_safe
-    return np.where(use_body, body_bot, low)
+    is_spike = lower_wick > 3.0 * body_safe
+    result = low.copy()
+    result = np.where(is_spike & ~is_doji, body_bot, result)
+    result = np.where(is_doji, (low + close) / 2.0, result)
+    return result
 
 
-def find_swing_highs(df, min_radius=2, max_radius=6, min_distance=3):
-    """Find swing high points using smart_high (body-based if wick too long)."""
-    prices = _smart_high(df)
+# Keep old names as aliases for any external usage
+_smart_high = _adaptive_high
+_smart_low = _adaptive_low
+
+
+def find_swing_highs(df, min_radius=1, max_radius=6, min_distance=3):
+    """Hybrid peak finder: flexible radius (1-6) from AIAlisa + prominence sort.
+    Uses adaptive prices (high, but body when wick > 3x body)."""
+    prices = _adaptive_high(df)
     n = len(prices)
     candidates = []
-    for i in range(min_radius, n - min_radius):
+    for i in range(1, n - 1):
+        best_radius = 0
         for r in range(min_radius, min(max_radius + 1, min(i + 1, n - i))):
             left = prices[max(0, i - r):i]
             right = prices[i + 1:min(n, i + r + 1)]
-            if len(left) > 0 and len(right) > 0 and prices[i] >= max(np.max(left), np.max(right)):
-                candidates.append((i, float(prices[i])))
+            if len(left) == 0 or len(right) == 0:
                 break
+            if prices[i] < np.max(left) or prices[i] < np.max(right):
+                break
+            best_radius = r
+        if best_radius < min_radius:
+            continue
+        # Require slope: at least one neighbor on each side strictly lower
+        has_left_slope = any(prices[j] < prices[i] for j in range(max(0, i - best_radius), i))
+        has_right_slope = any(prices[j] < prices[i] for j in range(i + 1, min(n, i + best_radius + 1)))
+        if has_left_slope and has_right_slope:
+            # Reject flat tops: if next candle has same price, skip
+            if i + 1 < n and prices[i + 1] == prices[i]:
+                continue
+            candidates.append((i, float(prices[i]), best_radius))
     if not candidates:
         return []
+    # Sort by price descending (prominence: highest first)
     candidates.sort(key=lambda x: -x[1])
     result = []
-    for idx, price in candidates:
+    for idx, price, _ in candidates:
         if all(abs(idx - r[0]) >= min_distance for r in result):
             result.append((idx, price))
     result.sort(key=lambda x: x[0])
     return result
 
 
-def find_swing_lows(df, min_radius=2, max_radius=6, min_distance=3):
-    """Find swing low points using smart_low."""
-    prices = _smart_low(df)
+def find_swing_lows(df, min_radius=1, max_radius=6, min_distance=3):
+    """Hybrid valley finder: flexible radius (1-6) + prominence sort.
+    Uses adaptive prices (low, but body when wick > 3x body)."""
+    prices = _adaptive_low(df)
     n = len(prices)
     candidates = []
-    for i in range(min_radius, n - min_radius):
+    for i in range(1, n - 1):
+        best_radius = 0
         for r in range(min_radius, min(max_radius + 1, min(i + 1, n - i))):
             left = prices[max(0, i - r):i]
             right = prices[i + 1:min(n, i + r + 1)]
-            if len(left) > 0 and len(right) > 0 and prices[i] <= min(np.min(left), np.min(right)):
-                candidates.append((i, float(prices[i])))
+            if len(left) == 0 or len(right) == 0:
                 break
+            if prices[i] > np.min(left) or prices[i] > np.min(right):
+                break
+            best_radius = r
+        if best_radius < min_radius:
+            continue
+        has_left_slope = any(prices[j] > prices[i] for j in range(max(0, i - best_radius), i))
+        has_right_slope = any(prices[j] > prices[i] for j in range(i + 1, min(n, i + best_radius + 1)))
+        if has_left_slope and has_right_slope:
+            if i + 1 < n and prices[i + 1] == prices[i]:
+                continue
+            candidates.append((i, float(prices[i]), best_radius))
     if not candidates:
         return []
+    # Sort by price ascending (lowest first = most prominent valley)
     candidates.sort(key=lambda x: x[1])
     result = []
-    for idx, price in candidates:
+    for idx, price, _ in candidates:
         if all(abs(idx - r[0]) >= min_distance for r in result):
             result.append((idx, price))
     result.sort(key=lambda x: x[0])
