@@ -439,6 +439,24 @@ def _detect_channel_v1(df):
     }
 
 
+def _anchor_price_high(df, idx):
+    """Anchor price for highs: use high, but if wick > 10% of body_top → use body_top."""
+    h = float(df["high"].iloc[idx])
+    bt = max(float(df["open"].iloc[idx]), float(df["close"].iloc[idx]))
+    if bt > 0 and (h - bt) > bt * 0.10:
+        return bt
+    return h
+
+
+def _anchor_price_low(df, idx):
+    """Anchor price for lows: use low, but if wick > 10% of body_bot → use body_bot."""
+    l = float(df["low"].iloc[idx])
+    bb = min(float(df["open"].iloc[idx]), float(df["close"].iloc[idx]))
+    if bb > 0 and (bb - l) > bb * 0.10:
+        return bb
+    return l
+
+
 def _detect_channel_v2(df):
     """
     Algorithm 2 — Recent peaks fallback.
@@ -446,9 +464,11 @@ def _detect_channel_v2(df):
     Good for steep/recent channels that Algorithm 1 misses (e.g. sharp dumps).
     
     Rules:
-    - Upper line by highs of two peaks, must NOT intersect candle bodies between them
-    - Lower line = same slope, on lowest body bottom between upper anchors
-    - Lower line must NOT intersect candle bodies
+    - Anchor prices: high, but body_top if wick > 10% of body_top
+    - Upper line must NOT intersect candle bodies between anchors
+    - Lower line = same slope, on lowest body bottom between anchors
+    - NO candle body may protrude below lower line (between anchors AND after)
+    - If bodies protrude → skip this pair, try next
     - Min 10 candles between anchors, max width 100%
     """
     n = len(df)
@@ -467,20 +487,24 @@ def _detect_channel_v2(df):
     # Sort peaks by index descending (most recent first)
     sorted_peaks = sorted(swing_highs, key=lambda x: x[0], reverse=True)
     
-    best = None
-    
     for i in range(len(sorted_peaks)):
         for j in range(i + 1, len(sorted_peaks)):
-            a2 = sorted_peaks[i]  # right (more recent)
-            a1 = sorted_peaks[j]  # left (older)
+            a2_raw = sorted_peaks[i]  # right (more recent)
+            a1_raw = sorted_peaks[j]  # left (older)
             
             # Ensure a1 is left of a2
-            if a1[0] > a2[0]:
-                a1, a2 = a2, a1
+            if a1_raw[0] > a2_raw[0]:
+                a1_raw, a2_raw = a2_raw, a1_raw
             
             # Min distance between anchors
-            if a2[0] - a1[0] < 10:
+            if a2_raw[0] - a1_raw[0] < 10:
                 continue
+            
+            # Apply 10% wick rule for anchor prices
+            a1_price = _anchor_price_high(df, a1_raw[0])
+            a2_price = _anchor_price_high(df, a2_raw[0])
+            a1 = (a1_raw[0], a1_price)
+            a2 = (a2_raw[0], a2_price)
             
             # Must be descending (a1 higher than a2)
             if a1[1] <= a2[1]:
@@ -495,7 +519,7 @@ def _detect_channel_v2(df):
             span_s = a1[0]
             span_e = a2[0] + 1
             
-            # Upper line must NOT intersect candle bodies
+            # Upper line must NOT intersect candle bodies between anchors
             upper_ok = True
             for k in range(span_s, min(n, span_e)):
                 u_at = _price_at(slope, upper_int, k)
@@ -514,13 +538,16 @@ def _detect_channel_v2(df):
             low_price = float(region[li])
             lower_int = np.log(low_price) - slope * low_idx
             
-            # Lower line must NOT intersect candle bodies
+            # Lower line must NOT intersect candle bodies between anchors
+            # If it does → SKIP this pair (don't shift)
             lower_ok = True
             for k in range(span_s, min(n, span_e)):
                 l_at = _price_at(slope, lower_int, k)
                 if l_at > body_bots[k] and l_at < body_tops[k]:
-                    # Shift down to body bottom
-                    lower_int = np.log(body_bots[k]) - slope * k
+                    lower_ok = False
+                    break
+            if not lower_ok:
+                continue
             
             # Width check
             mid = (a1[0] + a2[0]) // 2
@@ -676,22 +703,34 @@ def _try_ascending_channel(df, swing_highs, swing_lows, smart_highs, smart_lows,
     
     upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
     
-    # Break UP
+    # Break detection — by body (not just full candle)
+    body_tops_asc = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bots_asc = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    
     breakout = None
-    for i in range(anchor2[0], n):
-        upper_at = _price_at(slope, upper_int, i)
-        low_i = float(df["low"].iloc[i])
-        if low_i > upper_at * 1.003:
-            breakout = "up"
+    break_idx = None
+    
+    # Break DOWN: body bottom goes below lower line
+    for i in range(anchor2[0] + 1, n):
+        lower_at = _price_at(slope, lower_int, i)
+        if body_bots_asc[i] < lower_at * 0.997:
+            breakout = "down"
+            break_idx = i
             break
     
+    # Break UP: body top goes above upper line
     if breakout is None:
-        for i in range(anchor2[0], n):
-            lower_at = _price_at(slope, lower_int, i)
-            high_i = float(df["high"].iloc[i])
-            if high_i < lower_at * 0.997:
-                breakout = "down"
+        for i in range(anchor2[0] + 1, n):
+            upper_at = _price_at(slope, upper_int, i)
+            if body_tops_asc[i] > upper_at * 1.003:
+                breakout = "up"
+                break_idx = i
                 break
+    
+    # Filter touch points to only BEFORE break (don't count post-break touches)
+    if break_idx is not None:
+        lower_touches = [(i, p) for i, p in lower_touches if i <= break_idx]
+        upper_touches = [(i, p) for i, p in upper_touches if i <= break_idx]
     
     last_idx = n - 1
     last_close = float(df["close"].iloc[-1])
@@ -714,4 +753,8 @@ def _try_ascending_channel(df, swing_highs, swing_lows, smart_highs, smart_lows,
         "touches_lower": len(lower_touches),
         "swing_highs": swing_highs,
         "swing_lows": swing_lows,
+        "anchors": {
+            "lower": [anchor1, anchor2],
+            "upper": [(high_idx, high_price)],
+        },
     }
