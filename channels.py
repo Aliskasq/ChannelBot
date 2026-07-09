@@ -156,16 +156,16 @@ def _direction(s):
 
 def detect_channel(df):
     """
-    Main channel detection — tries Algorithm 1 first, falls back to Algorithm 2.
+    Main channel detection — tries Algorithm 1, 2, 3 in order.
     
     Algorithm 1 (classic): highest peak → next peak right → descending channel
-    Algorithm 2 (recent): rightmost peaks → work backwards → catches steep/recent moves
+    Algorithm 2 (recent highs): rightmost peaks → work backwards → steep/recent moves
+    Algorithm 3 (body lows): 2 anchors on body bottoms, upper = same slope on highest body top
     """
     MAX_WIDTH = 100.0
     
     result = _detect_channel_v1(df)
     if result is not None and result["width_pct"] <= MAX_WIDTH:
-        # Quality gate: check no candle bodies protrude beyond channel lines after anchors
         if _validate_channel_bodies(df, result):
             result["algorithm"] = 1
             return result
@@ -173,6 +173,11 @@ def detect_channel(df):
     result = _detect_channel_v2(df)
     if result is not None:
         result["algorithm"] = 2
+        return result
+    
+    result = _detect_channel_v3(df)
+    if result is not None:
+        result["algorithm"] = 3
     return result
 
 
@@ -685,6 +690,143 @@ def _detect_channel_v2(df):
                 "touches_upper": len(upper_touches), "touches_lower": len(lower_touches),
                 "swing_highs": swing_highs, "swing_lows": swing_lows,
                 "anchors": {"upper": [a1, a2], "lower": [(low_idx, low_price)]},
+            }
+    
+    return None
+
+
+def _detect_channel_v3(df):
+    """
+    Algorithm 3 — Body-based channel from lows.
+    When algo 1 & 2 fail (upper lines pierce bodies), build channel from below:
+    
+    1. Find 2 anchor points on body BOTTOMS (swing lows, using body prices)
+    2. Lower line through these 2 anchors
+    3. Upper line = same slope, on highest body TOP between anchors
+    4. Validate: no body protrudes above upper line or below lower line
+    5. Start from rightmost (most recent) pairs, work backwards
+    """
+    n = len(df)
+    if n < 50:
+        return None
+    
+    swing_highs = find_swing_highs(df)
+    swing_lows = find_swing_lows(df)
+    
+    if len(swing_lows) < 2:
+        return None
+    
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    
+    # Build swing lows with body prices (apply 10% wick rule)
+    sorted_lows = sorted(swing_lows, key=lambda x: x[0], reverse=True)
+    
+    for i in range(len(sorted_lows)):
+        for j in range(i + 1, len(sorted_lows)):
+            a2_raw = sorted_lows[i]   # right (recent)
+            a1_raw = sorted_lows[j]   # left (older)
+            
+            if a1_raw[0] > a2_raw[0]:
+                a1_raw, a2_raw = a2_raw, a1_raw
+            
+            if a2_raw[0] - a1_raw[0] < 10:
+                continue
+            
+            # Anchor prices = body bottoms (10% wick rule)
+            a1_price = _anchor_price_low(df, a1_raw[0])
+            a2_price = _anchor_price_low(df, a2_raw[0])
+            a1 = (a1_raw[0], a1_price)
+            a2 = (a2_raw[0], a2_price)
+            
+            slope, lower_int = _log_line(a1[0], a1[1], a2[0], a2[1])
+            
+            if abs(slope) > 0.03:
+                continue
+            
+            span_s = a1[0]
+            span_e = min(n, a2[0] + 1)
+            
+            # Lower line must NOT intersect candle bodies between anchors
+            lower_ok = True
+            for k in range(span_s, span_e):
+                l_at = _price_at(slope, lower_int, k)
+                if l_at > body_bots[k] and l_at < body_tops[k]:
+                    lower_ok = False
+                    break
+            if not lower_ok:
+                continue
+            
+            # Upper line: same slope, on highest body TOP between anchors
+            region_tops = body_tops[span_s:span_e]
+            if len(region_tops) == 0:
+                continue
+            hi = np.argmax(region_tops)
+            high_idx = span_s + hi
+            high_price = float(region_tops[hi])
+            upper_int = np.log(high_price) - slope * high_idx
+            
+            # Upper line must NOT intersect candle bodies between anchors
+            upper_ok = True
+            for k in range(span_s, span_e):
+                u_at = _price_at(slope, upper_int, k)
+                if u_at < body_tops[k] and u_at > body_bots[k]:
+                    upper_ok = False
+                    break
+            if not upper_ok:
+                continue
+            
+            # Width check
+            mid = (a1[0] + a2[0]) // 2
+            um = _price_at(slope, upper_int, mid)
+            lm = _price_at(slope, lower_int, mid)
+            if lm >= um:
+                continue
+            width_pct = (um - lm) / lm * 100
+            if width_pct < 1.0 or width_pct > 100.0:
+                continue
+            
+            upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
+            lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
+            
+            # Break detection
+            break_idx = None
+            breakout = None
+            # Break down: body below lower line
+            for bi in range(a2[0] + 1, n):
+                if body_bots[bi] < _price_at(slope, lower_int, bi) * 0.997:
+                    break_idx = bi
+                    breakout = "down"
+                    break
+            # Break up: body above upper line
+            if break_idx is None:
+                for bi in range(a2[0] + 1, n):
+                    if body_tops[bi] > _price_at(slope, upper_int, bi) * 1.003:
+                        break_idx = bi
+                        breakout = "up"
+                        break
+            
+            # Filter touches to before break
+            if break_idx is not None:
+                upper_touches = [(ti, tp) for ti, tp in upper_touches if ti <= break_idx]
+                lower_touches = [(ti, tp) for ti, tp in lower_touches if ti <= break_idx]
+            
+            last_idx = n - 1
+            last_close = float(df["close"].iloc[-1])
+            upper_now = _price_at(slope, upper_int, last_idx)
+            lower_now = _price_at(slope, lower_int, last_idx)
+            position = (last_close - lower_now) / (upper_now - lower_now) * 100 if upper_now > lower_now else 50.0
+            
+            return {
+                "direction": _direction(slope),
+                "upper_line": {"slope": slope, "intercept": upper_int, "points": upper_touches},
+                "lower_line": {"slope": slope, "intercept": lower_int, "points": lower_touches},
+                "width_pct": width_pct, "price_position": position,
+                "breakout": breakout, "second_channel": None,
+                "predicted_channel": None,
+                "touches_upper": len(upper_touches), "touches_lower": len(lower_touches),
+                "swing_highs": swing_highs, "swing_lows": swing_lows,
+                "anchors": {"lower": [a1, a2], "upper": [(high_idx, high_price)]},
             }
     
     return None
