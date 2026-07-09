@@ -810,6 +810,21 @@ def _detect_channel_v3(df):
             if width_pct < 1.0 or width_pct > 100.0:
                 continue
             
+            # Validate bodies from anchors to END of data
+            # If any body fully outside channel → skip this pair
+            full_valid = True
+            for k in range(span_s, n):
+                u_at = _price_at(slope, upper_int, k)
+                l_at = _price_at(slope, lower_int, k)
+                if body_tops[k] > u_at * 1.003 and body_bots[k] > u_at:
+                    full_valid = False
+                    break
+                if body_bots[k] < l_at * 0.997 and body_tops[k] < l_at:
+                    full_valid = False
+                    break
+            if not full_valid:
+                continue
+            
             upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
             lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
             
