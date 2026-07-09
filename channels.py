@@ -156,12 +156,29 @@ def _direction(s):
 
 def detect_channel(df):
     """
-    Main channel detection — Alisa's algorithm.
+    Main channel detection — tries Algorithm 1 first, falls back to Algorithm 2.
     
-    1. Find highest peak in last 200 candles
-    2. Find next significant peak to the RIGHT (lower) → upper line
-    3. Lower line = same slope on lowest point
-    4. Break detection → CH2 with shared anchor
+    Algorithm 1 (classic): highest peak → next peak right → descending channel
+    Algorithm 2 (recent): rightmost peaks → work backwards → catches steep/recent moves
+    """
+    MAX_WIDTH = 100.0
+    
+    result = _detect_channel_v1(df)
+    if result is not None and result["width_pct"] <= MAX_WIDTH:
+        result["algorithm"] = 1
+        return result
+    
+    result = _detect_channel_v2(df)
+    if result is not None:
+        result["algorithm"] = 2
+    return result
+
+
+def _detect_channel_v1(df):
+    """
+    Algorithm 1 — Alisa's original.
+    From highest peak → next peak to the right → descending channel.
+    Good for well-established channels across the full 200 candles.
     """
     n = len(df)
     if n < 50:
@@ -420,6 +437,187 @@ def detect_channel(df):
             "lower": [(low_idx, low_price)],
         },
     }
+
+
+def _detect_channel_v2(df):
+    """
+    Algorithm 2 — Recent peaks fallback.
+    Start from the rightmost (most recent) swing highs, try pairs working backwards.
+    Good for steep/recent channels that Algorithm 1 misses (e.g. sharp dumps).
+    
+    Rules:
+    - Upper line by highs of two peaks, must NOT intersect candle bodies between them
+    - Lower line = same slope, on lowest body bottom between upper anchors
+    - Lower line must NOT intersect candle bodies
+    - Min 10 candles between anchors, max width 100%
+    """
+    n = len(df)
+    if n < 50:
+        return None
+    
+    swing_highs = find_swing_highs(df)
+    swing_lows = find_swing_lows(df)
+    
+    if len(swing_highs) < 2:
+        return None
+    
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    
+    # Sort peaks by index descending (most recent first)
+    sorted_peaks = sorted(swing_highs, key=lambda x: x[0], reverse=True)
+    
+    best = None
+    
+    for i in range(len(sorted_peaks)):
+        for j in range(i + 1, len(sorted_peaks)):
+            a2 = sorted_peaks[i]  # right (more recent)
+            a1 = sorted_peaks[j]  # left (older)
+            
+            # Ensure a1 is left of a2
+            if a1[0] > a2[0]:
+                a1, a2 = a2, a1
+            
+            # Min distance between anchors
+            if a2[0] - a1[0] < 10:
+                continue
+            
+            # Must be descending (a1 higher than a2)
+            if a1[1] <= a2[1]:
+                continue
+            
+            slope, upper_int = _log_line(a1[0], a1[1], a2[0], a2[1])
+            
+            # Slope sanity
+            if abs(slope) > 0.03:
+                continue
+            
+            span_s = a1[0]
+            span_e = a2[0] + 1
+            
+            # Upper line must NOT intersect candle bodies
+            upper_ok = True
+            for k in range(span_s, min(n, span_e)):
+                u_at = _price_at(slope, upper_int, k)
+                if u_at < body_tops[k] and u_at > body_bots[k]:
+                    upper_ok = False
+                    break
+            if not upper_ok:
+                continue
+            
+            # Lower line: same slope, on lowest body bottom between anchors
+            region = body_bots[span_s:min(n, span_e)]
+            if len(region) == 0:
+                continue
+            li = np.argmin(region)
+            low_idx = span_s + li
+            low_price = float(region[li])
+            lower_int = np.log(low_price) - slope * low_idx
+            
+            # Lower line must NOT intersect candle bodies
+            lower_ok = True
+            for k in range(span_s, min(n, span_e)):
+                l_at = _price_at(slope, lower_int, k)
+                if l_at > body_bots[k] and l_at < body_tops[k]:
+                    # Shift down to body bottom
+                    lower_int = np.log(body_bots[k]) - slope * k
+            
+            # Width check
+            mid = (a1[0] + a2[0]) // 2
+            um = _price_at(slope, upper_int, mid)
+            lm = _price_at(slope, lower_int, mid)
+            if lm >= um:
+                continue
+            width_pct = (um - lm) / lm * 100
+            if width_pct < 1.0 or width_pct > 100.0:
+                continue
+            
+            upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
+            lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
+            
+            # Found a valid channel — take the first one (most recent pair)
+            # Break detection
+            break_idx = None
+            breakout = None
+            for bi in range(low_idx, n):
+                lower_at = _price_at(slope, lower_int, bi)
+                high_i = float(df["high"].iloc[bi])
+                if high_i < lower_at * 0.997:
+                    break_idx = bi
+                    breakout = "down"
+                    break
+            if break_idx is None:
+                for bi in range(a2[0], n):
+                    upper_at = _price_at(slope, upper_int, bi)
+                    low_i = float(df["low"].iloc[bi])
+                    if low_i > upper_at * 1.003:
+                        break_idx = bi
+                        breakout = "up"
+                        break
+            
+            # CH2 after break
+            second_channel = None
+            if break_idx is not None and breakout == "down":
+                ch2_a1 = a2  # shared point
+                post_peaks = [(pi, pp) for pi, pp in swing_highs
+                              if pi > ch2_a1[0] and (pi - ch2_a1[0]) >= 5]
+                if post_peaks:
+                    ch2_a2 = max(post_peaks, key=lambda x: x[0])
+                    ch2_slope, ch2_ui = _log_line(ch2_a1[0], ch2_a1[1], ch2_a2[0], ch2_a2[1])
+                    if abs(ch2_slope) <= 0.03:
+                        ch2_ss = ch2_a1[0]
+                        ch2_se = min(n, ch2_a2[0] + 1)
+                        ch2_region = body_bots[ch2_ss:ch2_se]
+                        if len(ch2_region) > 0:
+                            ch2_li = np.argmin(ch2_region)
+                            ch2_low_price = float(ch2_region[ch2_li])
+                            ch2_low_idx = ch2_ss + ch2_li
+                            ch2_li_int = np.log(ch2_low_price) - ch2_slope * ch2_low_idx
+                            # Shift lower if it cuts bodies
+                            for k in range(ch2_ss, ch2_se):
+                                l_at = _price_at(ch2_slope, ch2_li_int, k)
+                                if l_at > body_bots[k] and l_at < body_tops[k]:
+                                    ch2_li_int = np.log(body_bots[k]) - ch2_slope * k
+                            mid2 = (ch2_a1[0] + ch2_a2[0]) // 2
+                            um2 = _price_at(ch2_slope, ch2_ui, mid2)
+                            lm2 = _price_at(ch2_slope, ch2_li_int, mid2)
+                            if um2 > lm2:
+                                ch2_w = (um2 - lm2) / lm2 * 100
+                                ch2_ut = _touches(swing_highs, ch2_slope, ch2_ui, 0.015)
+                                ch2_lt = _touches(swing_lows, ch2_slope, ch2_li_int, 0.015)
+                                li_n = n - 1
+                                lc = float(df["close"].iloc[-1])
+                                u2n = _price_at(ch2_slope, ch2_ui, li_n)
+                                l2n = _price_at(ch2_slope, ch2_li_int, li_n)
+                                p2 = (lc - l2n) / (u2n - l2n) * 100 if u2n > l2n else 50
+                                second_channel = {
+                                    "direction": _direction(ch2_slope),
+                                    "upper_line": {"slope": ch2_slope, "intercept": ch2_ui, "points": ch2_ut},
+                                    "lower_line": {"slope": ch2_slope, "intercept": ch2_li_int, "points": ch2_lt},
+                                    "width_pct": ch2_w, "price_position": p2,
+                                    "touches_upper": len(ch2_ut), "touches_lower": len(ch2_lt),
+                                    "anchors": {"upper": [ch2_a1, ch2_a2], "lower": [(ch2_low_idx, ch2_low_price)]},
+                                }
+            
+            last_idx = n - 1
+            last_close = float(df["close"].iloc[-1])
+            upper_now = _price_at(slope, upper_int, last_idx)
+            lower_now = _price_at(slope, lower_int, last_idx)
+            position = (last_close - lower_now) / (upper_now - lower_now) * 100 if upper_now > lower_now else 50.0
+            
+            return {
+                "direction": _direction(slope),
+                "upper_line": {"slope": slope, "intercept": upper_int, "points": upper_touches},
+                "lower_line": {"slope": slope, "intercept": lower_int, "points": lower_touches},
+                "width_pct": width_pct, "price_position": position,
+                "breakout": breakout, "second_channel": second_channel,
+                "predicted_channel": None,
+                "touches_upper": len(upper_touches), "touches_lower": len(lower_touches),
+                "swing_highs": swing_highs, "swing_lows": swing_lows,
+                "anchors": {"upper": [a1, a2], "lower": [(low_idx, low_price)]},
+            }
+    
+    return None
 
 
 def _try_ascending_channel(df, swing_highs, swing_lows, smart_highs, smart_lows, n):
