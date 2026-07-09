@@ -165,13 +165,56 @@ def detect_channel(df):
     
     result = _detect_channel_v1(df)
     if result is not None and result["width_pct"] <= MAX_WIDTH:
-        result["algorithm"] = 1
-        return result
+        # Quality gate: check no candle bodies protrude beyond channel lines after anchors
+        if _validate_channel_bodies(df, result):
+            result["algorithm"] = 1
+            return result
     
     result = _detect_channel_v2(df)
     if result is not None:
         result["algorithm"] = 2
     return result
+
+
+def _validate_channel_bodies(df, ch):
+    """Validate that no candle body protrudes beyond channel lines after anchors.
+    Returns True if channel is valid, False if bodies violate."""
+    n = len(df)
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    
+    all_anchors = ch["anchors"].get("lower", []) + ch["anchors"].get("upper", [])
+    if not all_anchors:
+        return True
+    
+    last_anchor = max(int(a[0]) for a in all_anchors)
+    first_anchor = min(int(a[0]) for a in all_anchors)
+    
+    us = ch["upper_line"]["slope"]
+    ui = ch["upper_line"]["intercept"]
+    ls = ch["lower_line"]["slope"]
+    li = ch["lower_line"]["intercept"]
+    
+    # Check from first anchor to end (or breakout)
+    violations = 0
+    for i in range(first_anchor, n):
+        upper_at = _price_at(us, ui, i)
+        lower_at = _price_at(ls, li, i)
+        # Body above upper line
+        if body_bots[i] > upper_at * 1.003:
+            break  # this is a breakout up, stop checking
+        # Body below lower line
+        if body_tops[i] < lower_at * 0.997:
+            break  # breakout down, stop checking
+        # Body intersects lower line (body sticks below)
+        if body_bots[i] < lower_at * 0.997:
+            violations += 1
+        # Body intersects upper line (body sticks above)  
+        if body_tops[i] > upper_at * 1.003:
+            violations += 1
+    
+    # Zero tolerance: any body violation = invalid channel
+    return violations == 0
 
 
 def _detect_channel_v1(df):
