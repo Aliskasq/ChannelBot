@@ -765,6 +765,9 @@ def _detect_channel_v3(df):
             
             slope, lower_int = _log_line(a1[0], a1[1], a2[0], a2[1])
             
+            # Algo 3 = descending only
+            if slope >= 0:
+                continue
             if abs(slope) > 0.03:
                 continue
             
