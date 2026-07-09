@@ -174,11 +174,44 @@ def detect_channel(df):
     upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
     
     # =============================================
-    # STEP 4: Lower line — SAME SLOPE, on lowest point
+    # STEP 3b: If 4+ touches AND channel too wide, REBUILD from 2 closest to price
     # =============================================
-    # Find the lowest BODY BOTTOM in the channel span (not wicks!)
+    # Quick width check before rebuild
+    _mid = (anchor1[0] + anchor2[0]) // 2
+    _span_s = anchor1[0]
+    _span_e = min(n, anchor2[0] + 10)
+    _rl = body_bottoms[_span_s:_span_e]
+    _quick_width = 0
+    if len(_rl) > 0:
+        _li = np.argmin(_rl)
+        _lp = float(_rl[_li])
+        _lint = np.log(_lp) - slope * (_span_s + _li)
+        _um = _price_at(slope, upper_int, _mid)
+        _lm = _price_at(slope, _lint, _mid)
+        if _lm > 0 and _um > _lm:
+            _quick_width = (_um - _lm) / _lm * 100
+    
+    if len(upper_touches) >= 4 and _quick_width > 20:
+        # Take the 2 rightmost (closest to current price) touch points
+        sorted_by_idx = sorted(upper_touches, key=lambda x: x[0], reverse=True)
+        new_a2 = sorted_by_idx[0]  # closest to price
+        new_a1 = sorted_by_idx[1]  # second closest
+        # Make sure a1 is left of a2
+        if new_a1[0] > new_a2[0]:
+            new_a1, new_a2 = new_a2, new_a1
+        anchor1 = new_a1
+        anchor2 = new_a2
+        slope, upper_int = _log_line(anchor1[0], anchor1[1], anchor2[0], anchor2[1])
+        if abs(slope) > 0.03:
+            return None
+        upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
+    
+    # =============================================
+    # STEP 4: Lower line — SAME SLOPE, on lowest body bottom
+    # =============================================
+    # Find the lowest BODY BOTTOM BETWEEN the two anchor points (not wicks!)
     span_start = anchor1[0]
-    span_end = min(n, anchor2[0] + 20)  # extend a bit past anchor2
+    span_end = min(n, anchor2[0] + 10)
     
     region_lows = body_bottoms[span_start:span_end]
     if len(region_lows) == 0:
