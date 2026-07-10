@@ -1078,12 +1078,15 @@ def _detect_channel_v4(df):
             span_s = a[0]
             span_e = b[0] + 1
             
-            # Lower line: candle body must not be FULLY below the line
-            # (line through body is OK for ascending — it touches body bottoms)
+            # Lower line: between anchors, line must NOT intersect candle bodies
+            # Exception: ±1 candle from each anchor is allowed
+            anchor_tolerance = {a[0] - 1, a[0], a[0] + 1, b[0] - 1, b[0], b[0] + 1}
             lower_ok = True
             for k in range(span_s, min(n, span_e)):
+                if k in anchor_tolerance:
+                    continue
                 l_at = _price_at(slope, lower_int, k)
-                if body_tops[k] < l_at * 0.997:
+                if l_at > body_bots[k] and l_at < body_tops[k]:
                     lower_ok = False
                     break
             if not lower_ok:
