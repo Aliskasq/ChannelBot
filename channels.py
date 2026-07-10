@@ -196,8 +196,50 @@ def detect_channel(df):
     
     # Primary = first valid (priority order: 1, 2, 3)
     primary = all_results[0]
-    primary["extra_channels"] = all_results[1:]
+    
+    # Filter out extra channels that are too similar to primary
+    n = len(df)
+    extras = []
+    for ec in all_results[1:]:
+        if not _channels_similar(primary, ec, n):
+            extras.append(ec)
+    
+    primary["extra_channels"] = extras
     return primary
+
+
+def _channels_similar(ch1, ch2, n):
+    """Check if two channels are too similar (same plane). 
+    Compare upper/lower line prices at a few points — if overlap > 80%, skip."""
+    mid = n // 2
+    points = [n // 4, mid, 3 * n // 4]
+    
+    overlap_count = 0
+    for p in points:
+        u1 = _price_at(ch1["upper_line"]["slope"], ch1["upper_line"]["intercept"], p)
+        l1 = _price_at(ch1["lower_line"]["slope"], ch1["lower_line"]["intercept"], p)
+        u2 = _price_at(ch2["upper_line"]["slope"], ch2["upper_line"]["intercept"], p)
+        l2 = _price_at(ch2["lower_line"]["slope"], ch2["lower_line"]["intercept"], p)
+        
+        h1 = u1 - l1
+        h2 = u2 - l2
+        if h1 <= 0 or h2 <= 0:
+            continue
+        
+        # Overlap range
+        overlap_top = min(u1, u2)
+        overlap_bot = max(l1, l2)
+        overlap = max(0, overlap_top - overlap_bot)
+        
+        # Overlap as fraction of both channels
+        frac1 = overlap / h1
+        frac2 = overlap / h2
+        
+        if frac1 > 0.80 and frac2 > 0.80:
+            overlap_count += 1
+    
+    # If overlapping at most points → similar
+    return overlap_count >= 2
 
 
 def _validate_channel_bodies(df, ch):
