@@ -707,10 +707,11 @@ def _detect_channel_v2(df):
             if width_pct < 1.0 or width_pct > 100.0:
                 continue
             
-            # Validate bodies from anchors to END of data
+            # Validate bodies from 7 candles before anchors to END of data
             # If any body protrudes beyond channel lines → skip this pair
             full_valid = True
-            for k in range(span_s, n):
+            check_start = max(0, span_s - 7)
+            for k in range(check_start, n):
                 u_at = _price_at(slope, upper_int, k)
                 l_at = _price_at(slope, lower_int, k)
                 # Body above upper line
@@ -909,10 +910,11 @@ def _detect_channel_v3(df):
             if width_pct < 1.0 or width_pct > 100.0:
                 continue
             
-            # Validate bodies from anchors to END of data
+            # Validate bodies from 7 candles before anchors to END of data
             # If any body fully outside channel → skip this pair
             full_valid = True
-            for k in range(span_s, n):
+            check_start = max(0, span_s - 7)
+            for k in range(check_start, n):
                 u_at = _price_at(slope, upper_int, k)
                 l_at = _price_at(slope, lower_int, k)
                 if body_tops[k] > u_at * 1.003 and body_bots[k] > u_at:
@@ -1096,9 +1098,10 @@ def _detect_channel_v4(df):
             if width_pct < 1.0 or width_pct > 100.0:
                 continue
             
-            # Full validation: no body protrudes from anchors to end
+            # Full validation: no body protrudes from 7 candles before first anchor to end
             full_valid = True
-            for k in range(span_s, n):
+            check_start = max(0, span_s - 7)
+            for k in range(check_start, n):
                 u_at = _price_at(slope, upper_int, k)
                 l_at = _price_at(slope, lower_int, k)
                 if body_tops[k] > u_at * 1.003 and body_bots[k] > u_at:
