@@ -541,7 +541,11 @@ def _detect_channel_v2(df):
     body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
     
     # Sort peaks by index descending (most recent first)
-    sorted_peaks = sorted(swing_highs, key=lambda x: x[0], reverse=True)
+    # Exclude current and previous candle as anchors
+    sorted_peaks = sorted(
+        [(i, p) for i, p in swing_highs if i < n - 2],
+        key=lambda x: x[0], reverse=True
+    )
     
     for i in range(len(sorted_peaks)):
         for j in range(i + 1, len(sorted_peaks)):
