@@ -397,6 +397,12 @@ def _detect_channel_v1(df):
     low_idx = span_start + min_rel_idx
     low_price = float(region_lows[min_rel_idx])
     
+    # Check 7 candles around for a lower body bottom
+    adj_idx, adj_price = _adjust_lower_anchor(df, low_idx, low_price)
+    if adj_idx != low_idx:
+        low_idx = adj_idx
+        low_price = adj_price
+    
     lower_int = np.log(low_price) - slope * low_idx
     
     # Validate channel width
@@ -553,6 +559,23 @@ def _detect_channel_v1(df):
     }
 
 
+def _adjust_lower_anchor(df, idx, price):
+    """Check 7 candles left and right of a lower anchor.
+    If a lower body bottom exists nearby, return that candle instead.
+    Returns (new_idx, new_price) or original if no better found."""
+    n = len(df)
+    body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    best_idx = idx
+    best_price = price
+    for k in range(max(0, idx - 7), min(n, idx + 8)):
+        if k == idx:
+            continue
+        if body_bots[k] < best_price:
+            best_idx = k
+            best_price = float(body_bots[k])
+    return best_idx, best_price
+
+
 def _anchor_price_high(df, idx):
     """Anchor price for highs: use high, but if wick > 10% of body_top → use body_top."""
     h = float(df["high"].iloc[idx])
@@ -654,6 +677,13 @@ def _detect_channel_v2(df):
             li = np.argmin(region)
             low_idx = span_s + li
             low_price = float(region[li])
+            
+            # Check 7 candles around for a lower body bottom
+            adj_idx, adj_price = _adjust_lower_anchor(df, low_idx, low_price)
+            if adj_idx != low_idx:
+                low_idx = adj_idx
+                low_price = adj_price
+            
             lower_int = np.log(low_price) - slope * low_idx
             
             # Lower line must NOT intersect candle bodies between anchors
@@ -822,8 +852,12 @@ def _detect_channel_v3(df):
             # Anchor prices = ALWAYS body bottoms in algo 3
             a1_price = float(min(df["open"].iloc[a1_raw[0]], df["close"].iloc[a1_raw[0]]))
             a2_price = float(min(df["open"].iloc[a2_raw[0]], df["close"].iloc[a2_raw[0]]))
-            a1 = (a1_raw[0], a1_price)
-            a2 = (a2_raw[0], a2_price)
+            
+            # Check 7 candles around each anchor for lower body bottom
+            a1_adj_idx, a1_adj_price = _adjust_lower_anchor(df, a1_raw[0], a1_price)
+            a2_adj_idx, a2_adj_price = _adjust_lower_anchor(df, a2_raw[0], a2_price)
+            a1 = (a1_adj_idx, a1_adj_price)
+            a2 = (a2_adj_idx, a2_adj_price)
             
             slope, lower_int = _log_line(a1[0], a1[1], a2[0], a2[1])
             
@@ -985,12 +1019,19 @@ def _detect_channel_v4(df):
             a_price = float(body_bots[a_raw[0]])
             b_price = float(body_bots[b_raw[0]])
             
+            # Check 7 candles around each anchor for lower body bottom
+            a_adj_idx, a_adj_price = _adjust_lower_anchor(df, a_raw[0], a_price)
+            b_adj_idx, b_adj_price = _adjust_lower_anchor(df, b_raw[0], b_price)
+            
+            a_price, b_price = a_adj_price, b_adj_price
+            a_idx, b_idx = a_adj_idx, b_adj_idx
+            
             # Must be ascending: A < B
             if a_price >= b_price:
                 continue
             
-            a = (a_raw[0], a_price)
-            b = (b_raw[0], b_price)
+            a = (a_idx, a_price)
+            b = (b_idx, b_price)
             
             slope, lower_int = _log_line(a[0], a[1], b[0], b[1])
             
