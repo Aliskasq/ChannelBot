@@ -164,29 +164,40 @@ def _direction(s):
 
 def detect_channel(df):
     """
-    Main channel detection — tries Algorithm 1, 2, 3 in order.
+    Main channel detection — tries all algorithms, returns best + extras.
     
     Algorithm 1 (classic): highest peak → next peak right → descending channel
     Algorithm 2 (recent highs): rightmost peaks → work backwards → steep/recent moves
     Algorithm 3 (body lows): 2 anchors on body bottoms, upper = same slope on highest body top
+    
+    Returns the best channel with 'extra_channels' list of other valid results.
     """
     MAX_WIDTH = 100.0
+    all_results = []
     
-    result = _detect_channel_v1(df)
-    if result is not None and result["width_pct"] <= MAX_WIDTH:
-        if _validate_channel_bodies(df, result):
-            result["algorithm"] = 1
-            return result
+    r1 = _detect_channel_v1(df)
+    if r1 is not None and r1["width_pct"] <= MAX_WIDTH:
+        if _validate_channel_bodies(df, r1):
+            r1["algorithm"] = 1
+            all_results.append(r1)
     
-    result = _detect_channel_v2(df)
-    if result is not None:
-        result["algorithm"] = 2
-        return result
+    r2 = _detect_channel_v2(df)
+    if r2 is not None:
+        r2["algorithm"] = 2
+        all_results.append(r2)
     
-    result = _detect_channel_v3(df)
-    if result is not None:
-        result["algorithm"] = 3
-    return result
+    r3 = _detect_channel_v3(df)
+    if r3 is not None:
+        r3["algorithm"] = 3
+        all_results.append(r3)
+    
+    if not all_results:
+        return None
+    
+    # Primary = first valid (priority order: 1, 2, 3)
+    primary = all_results[0]
+    primary["extra_channels"] = all_results[1:]
+    return primary
 
 
 def _validate_channel_bodies(df, ch):

@@ -28,5 +28,7 @@ if channel:
         print(f"BREAKOUT: {channel['breakout']}")
     if channel.get('predicted_channel'):
         print("Predicted channel drawn")
+    for ec in channel.get('extra_channels', []):
+        print(f"  + Algo {ec.get('algorithm')}: {ec['direction']} w={ec['width_pct']:.1f}%")
 else:
     print("No channel detected")

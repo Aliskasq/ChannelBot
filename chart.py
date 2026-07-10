@@ -314,6 +314,30 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
 
             # Info box removed — was cluttering the chart
 
+            # EXTRA CHANNELS from other algorithms (different colors)
+            _extra_colors = ['#00FF00', '#FF69B4', '#FFD700']  # green, pink, gold
+            for ec_idx, ec in enumerate(channel.get("extra_channels", [])):
+                ec_color = _extra_colors[ec_idx % len(_extra_colors)]
+                ec_upper = [_line_price_at(ec["upper_line"]["slope"],
+                                           ec["upper_line"]["intercept"], i)
+                            for i in range(view_limit)]
+                ec_lower = [_line_price_at(ec["lower_line"]["slope"],
+                                           ec["lower_line"]["intercept"], i)
+                            for i in range(view_limit)]
+                ax.plot(range(view_limit), ec_upper, color=ec_color, linewidth=1.5,
+                        linestyle='--', alpha=0.7, zorder=3)
+                ax.plot(range(view_limit), ec_lower, color=ec_color, linewidth=1.5,
+                        linestyle='--', alpha=0.7, zorder=3)
+                ax.fill_between(range(view_limit), ec_lower, ec_upper,
+                                color=ec_color, alpha=0.04, zorder=1)
+                # Extra channel anchors (smaller diamonds)
+                ec_anchors = ec.get("anchors", {})
+                for label_pts in [ec_anchors.get("upper", []), ec_anchors.get("lower", [])]:
+                    for idx, price in label_pts:
+                        if 0 <= idx < view_limit:
+                            ax.plot(idx, price, 'D', color=ec_color, markersize=8,
+                                    markeredgecolor='white', markeredgewidth=1, zorder=7)
+
         # Watermark
         wm_x = 1 / max(view_limit - 1, 1)
         ax.text(wm_x, 0.02, 'Channel Bot', transform=ax.transAxes,
