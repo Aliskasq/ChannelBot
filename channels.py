@@ -678,24 +678,30 @@ def _detect_channel_v2(df):
             low_idx = span_s + li
             low_price = float(region[li])
             
-            # Check 7 candles around for a lower body bottom
+            # Check 7 candles around for a lower body bottom (try adjusted, fallback original)
+            orig_low_idx, orig_low_price = low_idx, low_price
             adj_idx, adj_price = _adjust_lower_anchor(df, low_idx, low_price)
+            low_candidates = []
             if adj_idx != low_idx:
-                low_idx = adj_idx
-                low_price = adj_price
+                low_candidates.append((adj_idx, adj_price))
+            low_candidates.append((orig_low_idx, orig_low_price))
             
-            lower_int = np.log(low_price) - slope * low_idx
-            
-            # Lower line must NOT intersect candle bodies between anchors
-            # If it does → SKIP this pair (don't shift)
-            lower_ok = True
-            for k in range(span_s, min(n, span_e)):
-                l_at = _price_at(slope, lower_int, k)
-                if l_at > body_bots[k] and l_at < body_tops[k]:
-                    lower_ok = False
+            best_lower = None
+            for lc_idx, lc_price in low_candidates:
+                lc_int = np.log(lc_price) - slope * lc_idx
+                lc_ok = True
+                for k in range(span_s, min(n, span_e)):
+                    l_at = _price_at(slope, lc_int, k)
+                    if l_at > body_bots[k] and l_at < body_tops[k]:
+                        lc_ok = False
+                        break
+                if lc_ok:
+                    best_lower = (lc_idx, lc_price, lc_int)
                     break
-            if not lower_ok:
+            
+            if best_lower is None:
                 continue
+            low_idx, low_price, lower_int = best_lower
             
             # Width check
             mid = (a1[0] + a2[0]) // 2
@@ -854,13 +860,29 @@ def _detect_channel_v3(df):
             a1_price = float(min(df["open"].iloc[a1_raw[0]], df["close"].iloc[a1_raw[0]]))
             a2_price = float(min(df["open"].iloc[a2_raw[0]], df["close"].iloc[a2_raw[0]]))
             
-            # Check 7 candles around each anchor for lower body bottom
+            # Check 7 candles around each anchor for lower body bottom (try adjusted, fallback original)
             a1_adj_idx, a1_adj_price = _adjust_lower_anchor(df, a1_raw[0], a1_price)
             a2_adj_idx, a2_adj_price = _adjust_lower_anchor(df, a2_raw[0], a2_price)
-            a1 = (a1_adj_idx, a1_adj_price)
-            a2 = (a2_adj_idx, a2_adj_price)
             
-            slope, lower_int = _log_line(a1[0], a1[1], a2[0], a2[1])
+            # Try adjusted first, fallback to original
+            anchor_candidates = []
+            if a1_adj_idx != a1_raw[0] or a2_adj_idx != a2_raw[0]:
+                anchor_candidates.append(((a1_adj_idx, a1_adj_price), (a2_adj_idx, a2_adj_price)))
+            anchor_candidates.append(((a1_raw[0], a1_price), (a2_raw[0], a2_price)))
+            
+            found_pair = False
+            for a1_cand, a2_cand in anchor_candidates:
+                test_slope, test_li = _log_line(a1_cand[0], a1_cand[1], a2_cand[0], a2_cand[1])
+                if test_slope < 0 and abs(test_slope) <= 0.03:
+                    a1 = a1_cand
+                    a2 = a2_cand
+                    slope = test_slope
+                    lower_int = test_li
+                    found_pair = True
+                    break
+            
+            if not found_pair:
+                continue
             
             # Algo 3 = descending only
             if slope >= 0:
@@ -1018,22 +1040,32 @@ def _detect_channel_v4(df):
                 continue
             
             # Anchor prices = ALWAYS body bottoms
-            a_price = float(body_bots[a_raw[0]])
-            b_price = float(body_bots[b_raw[0]])
+            a_orig_price = float(body_bots[a_raw[0]])
+            b_orig_price = float(body_bots[b_raw[0]])
             
             # Check 7 candles around each anchor for lower body bottom
-            a_adj_idx, a_adj_price = _adjust_lower_anchor(df, a_raw[0], a_price)
-            b_adj_idx, b_adj_price = _adjust_lower_anchor(df, b_raw[0], b_price)
+            a_adj_idx, a_adj_price = _adjust_lower_anchor(df, a_raw[0], a_orig_price)
+            b_adj_idx, b_adj_price = _adjust_lower_anchor(df, b_raw[0], b_orig_price)
             
-            a_price, b_price = a_adj_price, b_adj_price
-            a_idx, b_idx = a_adj_idx, b_adj_idx
+            # Try adjusted first, fallback to original
+            candidates = []
+            if a_adj_idx != a_raw[0] or b_adj_idx != b_raw[0]:
+                candidates.append((a_adj_idx, a_adj_price, b_adj_idx, b_adj_price))
+            candidates.append((a_raw[0], a_orig_price, b_raw[0], b_orig_price))
             
-            # Must be ascending: A < B
-            if a_price >= b_price:
+            found = False
+            for a_idx, a_price, b_idx, b_price in candidates:
+                if b_idx - a_idx < 15:
+                    continue
+                if a_price >= b_price:
+                    continue
+                a = (a_idx, a_price)
+                b = (b_idx, b_price)
+                found = True
+                break
+            
+            if not found:
                 continue
-            
-            a = (a_idx, a_price)
-            b = (b_idx, b_price)
             
             slope, lower_int = _log_line(a[0], a[1], b[0], b[1])
             
@@ -1046,11 +1078,12 @@ def _detect_channel_v4(df):
             span_s = a[0]
             span_e = b[0] + 1
             
-            # Lower line must NOT intersect candle bodies between anchors
+            # Lower line: candle body must not be FULLY below the line
+            # (line through body is OK for ascending — it touches body bottoms)
             lower_ok = True
             for k in range(span_s, min(n, span_e)):
                 l_at = _price_at(slope, lower_int, k)
-                if l_at > body_bots[k] and l_at < body_tops[k]:
+                if body_tops[k] < l_at * 0.997:
                     lower_ok = False
                     break
             if not lower_ok:
