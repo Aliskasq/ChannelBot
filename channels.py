@@ -101,6 +101,40 @@ def find_swing_highs(df, min_radius=1, max_radius=6, min_distance=3):
     return result
 
 
+def find_swing_highs_body(df, min_radius=1, max_radius=6, min_distance=3):
+    """Same as find_swing_highs but uses body tops (max(open, close)) instead of adaptive highs."""
+    prices = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    n = len(prices)
+    candidates = []
+    for i in range(1, n - 1):
+        best_radius = 0
+        for r in range(min_radius, min(max_radius + 1, min(i + 1, n - i))):
+            left = prices[max(0, i - r):i]
+            right = prices[i + 1:min(n, i + r + 1)]
+            if len(left) == 0 or len(right) == 0:
+                break
+            if prices[i] < np.max(left) or prices[i] < np.max(right):
+                break
+            best_radius = r
+        if best_radius < min_radius:
+            continue
+        has_left_slope = any(prices[j] < prices[i] for j in range(max(0, i - best_radius), i))
+        has_right_slope = any(prices[j] < prices[i] for j in range(i + 1, min(n, i + best_radius + 1)))
+        if has_left_slope and has_right_slope:
+            if i + 1 < n and prices[i + 1] == prices[i]:
+                continue
+            candidates.append((i, float(prices[i]), best_radius))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: -x[1])
+    result = []
+    for idx, price, _ in candidates:
+        if all(abs(idx - r[0]) >= min_distance for r in result):
+            result.append((idx, price))
+    result.sort(key=lambda x: x[0])
+    return result
+
+
 def find_swing_lows(df, min_radius=1, max_radius=6, min_distance=3):
     """Hybrid valley finder: flexible radius (1-6) + prominence sort.
     Uses adaptive prices (low, but body when wick > 3x body)."""
@@ -203,6 +237,12 @@ def detect_channel(df, interval="4h"):
         if _validate_channel_bodies(df, r1):
             r1["algorithm"] = 1
             all_results.append(r1)
+    
+    r1_1 = _detect_channel_v1_1(df, interval=interval)
+    if r1_1 is not None and r1_1["width_pct"] <= MAX_WIDTH:
+        if _validate_channel_bodies(df, r1_1):
+            r1_1["algorithm"] = 1.1
+            all_results.append(r1_1)
     
     r2 = _detect_channel_v2(df)
     if r2 is not None:
@@ -336,7 +376,7 @@ def _detect_channel_v1(df, interval="4h"):
     if min_body_price <= 0:
         return None
     growth_pct = (current_price - min_body_price) / min_body_price * 100
-    if growth_pct < 20.0:
+    if growth_pct < 10.0:
         return None
 
     swing_highs = find_swing_highs(df)
@@ -364,9 +404,8 @@ def _detect_channel_v1(df, interval="4h"):
     # STEP 2: Find anchor 2 — next peak to the RIGHT, lower
     # =============================================
     # Candidates: swing highs to the RIGHT of anchor1, that are LOWER
-    # Minimum 30 candles apart for meaningful channel slope
     right_peaks = [(i, p) for i, p in relevant_highs 
-                   if i > anchor1[0] and p < anchor1[1] and (i - anchor1[0]) >= 30]
+                   if i > anchor1[0] and p < anchor1[1]]
     
     if not right_peaks:
         # No peaks to the right — try looking for ascending channel instead
@@ -631,6 +670,223 @@ def _anchor_price_low(df, idx):
     if bb > 0 and (bb - l) > bb * 0.10:
         return bb
     return l
+
+
+def _detect_channel_v1_1(df, interval="4h"):
+    """
+    Algorithm 1.1 — Same as Algorithm 1, but upper line built on BODY TOPS
+    (max(open, close)) instead of swing highs (adaptive high/wicks).
+    Everything else identical: precondition 10%+ growth, lower line on body bottoms, etc.
+    """
+    n = len(df)
+    if n < 50:
+        return None
+
+    # PRECONDITION: 10%+ growth from lowest body bottom in last 30 days
+    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    candles_30d = _candles_in_days(interval, 30)
+    window_start = max(0, n - candles_30d)
+    recent_body_bots = body_bottoms[window_start:]
+    min_body_price = float(np.min(recent_body_bots))
+    current_price = float(df["close"].values[-1])
+    if min_body_price <= 0:
+        return None
+    growth_pct = (current_price - min_body_price) / min_body_price * 100
+    if growth_pct < 10.0:
+        return None
+
+    # Use body-top swing highs for upper line
+    swing_highs_b = find_swing_highs_body(df)
+    swing_lows = find_swing_lows(df)
+    smart_lows = _smart_low(df)
+    smart_highs = _smart_high(df)
+
+    if len(swing_highs_b) < 2:
+        return None
+
+    # STEP 1: Highest body-top peak
+    lookback_start = max(0, n - 200)
+    relevant_highs = [(i, p) for i, p in swing_highs_b if i >= lookback_start]
+    if len(relevant_highs) < 2:
+        return None
+    anchor1 = max(relevant_highs, key=lambda x: x[1])
+
+    # STEP 2: Next body-top peak to the RIGHT, lower
+    right_peaks = [(i, p) for i, p in relevant_highs
+                   if i > anchor1[0] and p < anchor1[1]]
+    if not right_peaks:
+        return None
+    anchor2 = max(right_peaks, key=lambda x: x[1])
+
+    # STEP 3: Upper line through body-top anchors
+    slope, upper_int = _log_line(anchor1[0], anchor1[1], anchor2[0], anchor2[1])
+    if abs(slope) > 0.03:
+        return None
+    upper_touches = _touches(swing_highs_b, slope, upper_int, 0.015)
+
+    # STEP 3b: If 4+ touches AND channel too wide, rebuild from 2 closest
+    _mid = (anchor1[0] + anchor2[0]) // 2
+    _span_s = anchor1[0]
+    _span_e = min(n, anchor2[0] + 10)
+    _rl = body_bottoms[_span_s:_span_e]
+    _quick_width = 0
+    if len(_rl) > 0:
+        _li = np.argmin(_rl)
+        _lp = float(_rl[_li])
+        _lint = np.log(_lp) - slope * (_span_s + _li)
+        _um = _price_at(slope, upper_int, _mid)
+        _lm = _price_at(slope, _lint, _mid)
+        if _lm > 0 and _um > _lm:
+            _quick_width = (_um - _lm) / _lm * 100
+    if len(upper_touches) >= 4 and _quick_width > 20:
+        sorted_by_idx = sorted(upper_touches, key=lambda x: x[0], reverse=True)
+        new_a2 = sorted_by_idx[0]
+        new_a1 = sorted_by_idx[1]
+        if new_a1[0] > new_a2[0]:
+            new_a1, new_a2 = new_a2, new_a1
+        anchor1 = new_a1
+        anchor2 = new_a2
+        slope, upper_int = _log_line(anchor1[0], anchor1[1], anchor2[0], anchor2[1])
+        if abs(slope) > 0.03:
+            return None
+        upper_touches = _touches(swing_highs_b, slope, upper_int, 0.015)
+
+    # STEP 4: Lower line — same slope, on lowest body bottom
+    span_start = anchor1[0]
+    span_end = min(n, anchor2[0] + 10)
+    region_lows = body_bottoms[span_start:span_end]
+    if len(region_lows) == 0:
+        return None
+    min_rel_idx = np.argmin(region_lows)
+    low_idx = span_start + min_rel_idx
+    low_price = float(region_lows[min_rel_idx])
+    adj_idx, adj_price = _adjust_lower_anchor(df, low_idx, low_price)
+    if adj_idx != low_idx:
+        low_idx = adj_idx
+        low_price = adj_price
+    lower_int = np.log(low_price) - slope * low_idx
+
+    # Validate width
+    mid = (anchor1[0] + anchor2[0]) // 2
+    um = _price_at(slope, upper_int, mid)
+    lm = _price_at(slope, lower_int, mid)
+    if lm >= um:
+        return None
+    width_pct = (um - lm) / lm * 100
+    if width_pct < 1.0:
+        return None
+    lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
+
+    # STEP 5: Break point
+    break_idx = None
+    breakout = None
+    search_start = low_idx
+    for i in range(search_start, n):
+        lower_at = _price_at(slope, lower_int, i)
+        high_i = float(df["high"].iloc[i])
+        if high_i < lower_at * 0.997:
+            break_idx = i
+            breakout = "down"
+            break
+    if break_idx is None:
+        for i in range(anchor2[0], n):
+            upper_at = _price_at(slope, upper_int, i)
+            low_i = float(df["low"].iloc[i])
+            if low_i > upper_at * 1.003:
+                break_idx = i
+                breakout = "up"
+                break
+
+    # STEP 6: CH2 after break
+    second_channel = None
+    if break_idx is not None and breakout == "down":
+        ch2_a1 = anchor2
+        post_peaks = [(i, p) for i, p in swing_highs_b
+                      if i > ch2_a1[0] and (i - ch2_a1[0]) >= 5]
+        if post_peaks:
+            ch2_a2 = max(post_peaks, key=lambda x: x[0])
+            ch2_slope, ch2_upper_int = _log_line(ch2_a1[0], ch2_a1[1], ch2_a2[0], ch2_a2[1])
+            if abs(ch2_slope) <= 0.03:
+                ch2_upper_touches = _touches(swing_highs_b, ch2_slope, ch2_upper_int, 0.015)
+                ch1_lower_touches = _touches(swing_lows, slope, lower_int, 0.02)
+                ch2_low_anchor = None
+                for ti, tp in reversed(ch1_lower_touches):
+                    if ti >= break_idx:
+                        continue
+                    ch_width_at = _price_at(slope, upper_int, ti) - _price_at(slope, lower_int, ti)
+                    bounce_threshold = _price_at(slope, lower_int, ti) + ch_width_at * 0.3
+                    bounced = False
+                    for j in range(ti + 1, min(n, ti + 15)):
+                        if float(df["high"].iloc[j]) > bounce_threshold:
+                            bounced = True
+                            break
+                    if bounced:
+                        ch2_low_anchor = (ti, tp)
+                        break
+                else:
+                    region = smart_lows[max(0, ch2_a1[0]):min(n, break_idx + 5)]
+                    if len(region) > 0:
+                        ri = np.argmin(region)
+                        ch2_low_anchor = (ch2_a1[0] + ri, float(region[ri]))
+                if ch2_low_anchor:
+                    ch2_lower_int = np.log(ch2_low_anchor[1]) - ch2_slope * ch2_low_anchor[0]
+                    mid2 = (ch2_a1[0] + ch2_a2[0]) // 2
+                    um2 = _price_at(ch2_slope, ch2_upper_int, mid2)
+                    lm2 = _price_at(ch2_slope, ch2_lower_int, mid2)
+                    if um2 > lm2:
+                        ch2_width = (um2 - lm2) / lm2 * 100
+                        ch2_lower_touches = _touches(swing_lows, ch2_slope, ch2_lower_int, 0.015)
+                        last_idx = n - 1
+                        last_close = float(df["close"].iloc[-1])
+                        u2_now = _price_at(ch2_slope, ch2_upper_int, last_idx)
+                        l2_now = _price_at(ch2_slope, ch2_lower_int, last_idx)
+                        pos2 = (last_close - l2_now) / (u2_now - l2_now) * 100 if u2_now > l2_now else 50
+                        second_channel = {
+                            "direction": _direction(ch2_slope),
+                            "upper_line": {"slope": ch2_slope, "intercept": ch2_upper_int,
+                                           "points": ch2_upper_touches},
+                            "lower_line": {"slope": ch2_slope, "intercept": ch2_lower_int,
+                                           "points": ch2_lower_touches},
+                            "width_pct": ch2_width,
+                            "price_position": pos2,
+                            "touches_upper": len(ch2_upper_touches),
+                            "touches_lower": len(ch2_lower_touches),
+                            "anchors": {
+                                "upper": [ch2_a1, ch2_a2],
+                                "lower": [ch2_low_anchor],
+                            },
+                        }
+
+    # Result
+    last_idx = n - 1
+    last_close = float(df["close"].iloc[-1])
+    upper_now = _price_at(slope, upper_int, last_idx)
+    lower_now = _price_at(slope, lower_int, last_idx)
+    position = (last_close - lower_now) / (upper_now - lower_now) * 100 if upper_now > lower_now else 50.0
+
+    # Use regular swing_highs for the result (for chart drawing compatibility)
+    swing_highs_regular = find_swing_highs(df)
+
+    return {
+        "direction": _direction(slope),
+        "upper_line": {"slope": slope, "intercept": upper_int,
+                       "points": upper_touches},
+        "lower_line": {"slope": slope, "intercept": lower_int,
+                       "points": lower_touches},
+        "width_pct": width_pct,
+        "price_position": position,
+        "breakout": breakout,
+        "second_channel": second_channel,
+        "predicted_channel": None,
+        "touches_upper": len(upper_touches),
+        "touches_lower": len(lower_touches),
+        "swing_highs": swing_highs_regular,
+        "swing_lows": swing_lows,
+        "anchors": {
+            "upper": [anchor1, anchor2],
+            "lower": [(low_idx, low_price)],
+        },
+    }
 
 
 def _detect_channel_v2(df):
