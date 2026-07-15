@@ -463,23 +463,33 @@ def _detect_channel_v1(df, interval="4h"):
     # =============================================
     # STEP 4: Lower line — SAME SLOPE, on lowest body bottom
     # =============================================
-    # Find the lowest BODY BOTTOM BETWEEN the two anchor points (not wicks!)
+    # Find the lowest BODY BOTTOM strictly BETWEEN the two upper anchors.
+    # If none found, extend up to 10 candles after the right anchor.
     span_start = anchor1[0]
-    span_end = min(n, anchor2[0] + 10)
+    span_end_strict = anchor2[0] + 1  # between anchors inclusive
+    span_end_extended = min(n, anchor2[0] + 11)  # fallback: +10 candles
     
-    region_lows = body_bottoms[span_start:span_end]
+    region_lows = body_bottoms[span_start:span_end_strict]
     if len(region_lows) == 0:
-        return None
+        # Fallback: extend search
+        region_lows = body_bottoms[span_start:span_end_extended]
+        if len(region_lows) == 0:
+            return None
     
     min_rel_idx = np.argmin(region_lows)
     low_idx = span_start + min_rel_idx
     low_price = float(region_lows[min_rel_idx])
     
-    # Check 7 candles around for a lower body bottom
-    adj_idx, adj_price = _adjust_lower_anchor(df, low_idx, low_price)
-    if adj_idx != low_idx:
-        low_idx = adj_idx
-        low_price = adj_price
+    # If the low between anchors is same as anchor price (no real dip),
+    # try extended range
+    if low_price >= min(anchor1[1], anchor2[1]):
+        region_ext = body_bottoms[span_start:span_end_extended]
+        if len(region_ext) > 0:
+            ext_min_idx = np.argmin(region_ext)
+            ext_price = float(region_ext[ext_min_idx])
+            if ext_price < low_price:
+                low_idx = span_start + ext_min_idx
+                low_price = ext_price
     
     lower_int = np.log(low_price) - slope * low_idx
     
@@ -751,19 +761,31 @@ def _detect_channel_v1_1(df, interval="4h"):
             return None
         upper_touches = _touches(swing_highs_b, slope, upper_int, 0.015)
 
-    # STEP 4: Lower line — same slope, on lowest body bottom
+    # STEP 4: Lower line — same slope, lowest body bottom between anchors
+    # First try strictly between anchors, fallback to +10 candles after right anchor
     span_start = anchor1[0]
-    span_end = min(n, anchor2[0] + 10)
-    region_lows = body_bottoms[span_start:span_end]
+    span_end_strict = anchor2[0] + 1
+    span_end_extended = min(n, anchor2[0] + 11)
+    
+    region_lows = body_bottoms[span_start:span_end_strict]
     if len(region_lows) == 0:
-        return None
+        region_lows = body_bottoms[span_start:span_end_extended]
+        if len(region_lows) == 0:
+            return None
+    
     min_rel_idx = np.argmin(region_lows)
     low_idx = span_start + min_rel_idx
     low_price = float(region_lows[min_rel_idx])
-    adj_idx, adj_price = _adjust_lower_anchor(df, low_idx, low_price)
-    if adj_idx != low_idx:
-        low_idx = adj_idx
-        low_price = adj_price
+    
+    if low_price >= min(anchor1[1], anchor2[1]):
+        region_ext = body_bottoms[span_start:span_end_extended]
+        if len(region_ext) > 0:
+            ext_min_idx = np.argmin(region_ext)
+            ext_price = float(region_ext[ext_min_idx])
+            if ext_price < low_price:
+                low_idx = span_start + ext_min_idx
+                low_price = ext_price
+    
     lower_int = np.log(low_price) - slope * low_idx
 
     # Validate width
