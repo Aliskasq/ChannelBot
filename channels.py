@@ -162,11 +162,34 @@ def _direction(s):
     return "ascending" if s > 0 else "descending"
 
 
-def detect_channel(df):
+def _interval_to_minutes(interval: str) -> int:
+    """Convert interval string (1m, 5m, 1h, 4h, 1d, 1w, 1M) to minutes."""
+    s = interval.strip().lower()
+    if s.endswith("m") and s[:-1].isdigit():
+        return int(s[:-1])
+    elif s.endswith("h"):
+        return int(s[:-1]) * 60
+    elif s.endswith("d"):
+        return int(s[:-1]) * 1440
+    elif s.endswith("w"):
+        return int(s[:-1]) * 10080
+    elif s.upper().endswith("M"):
+        return int(s[:-1]) * 43200  # ~30 days
+    return 240  # default 4h
+
+
+def _candles_in_days(interval: str, days: int) -> int:
+    """How many candles fit in N days for a given interval."""
+    mins = _interval_to_minutes(interval)
+    return max(1, (days * 1440) // mins)
+
+
+def detect_channel(df, interval="4h"):
     """
     Main channel detection — tries all algorithms, returns best + extras.
     
     Algorithm 1 (classic): highest peak → next peak right → descending channel
+      Precondition: coin grew 20%+ from lowest body in last 30 days
     Algorithm 2 (recent highs): rightmost peaks → work backwards → steep/recent moves
     Algorithm 3 (body lows): 2 anchors on body bottoms, upper = same slope on highest body top
     
@@ -175,7 +198,7 @@ def detect_channel(df):
     MAX_WIDTH = 100.0
     all_results = []
     
-    r1 = _detect_channel_v1(df)
+    r1 = _detect_channel_v1(df, interval=interval)
     if r1 is not None and r1["width_pct"] <= MAX_WIDTH:
         if _validate_channel_bodies(df, r1):
             r1["algorithm"] = 1
@@ -288,22 +311,38 @@ def _validate_channel_bodies(df, ch):
     return violations == 0
 
 
-def _detect_channel_v1(df):
+def _detect_channel_v1(df, interval="4h"):
     """
     Algorithm 1 — Alisa's original.
     From highest peak → next peak to the right → descending channel.
     Good for well-established channels across the full 200 candles.
+    
+    Precondition: coin must have grown 20%+ from the lowest candle body
+    within the last 30 days to current price. If not — algo doesn't apply.
     """
     n = len(df)
     if n < 50:
+        return None
+
+    # =============================================
+    # PRECONDITION: 20%+ growth from lowest body bottom in last 30 days
+    # =============================================
+    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    candles_30d = _candles_in_days(interval, 30)
+    window_start = max(0, n - candles_30d)
+    recent_body_bots = body_bottoms[window_start:]
+    min_body_price = float(np.min(recent_body_bots))
+    current_price = float(df["close"].values[-1])
+    if min_body_price <= 0:
+        return None
+    growth_pct = (current_price - min_body_price) / min_body_price * 100
+    if growth_pct < 20.0:
         return None
 
     swing_highs = find_swing_highs(df)
     swing_lows = find_swing_lows(df)
     smart_lows = _smart_low(df)
     smart_highs = _smart_high(df)
-    # Body bottoms for lower line placement (not wicks!)
-    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
 
     if len(swing_highs) < 2:
         return None

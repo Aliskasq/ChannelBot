@@ -15,7 +15,7 @@ print(f"Fetching {symbol}USDT {interval} ({limit} candles)...")
 df = fetch_klines(symbol, interval, limit)
 print(f"Got {len(df)} candles")
 
-channel = detect_channel(df)
+channel = detect_channel(df, interval=interval)
 path = draw_channel_chart(symbol, df, channel, interval)
 print(f"Chart saved: {path}")
 
