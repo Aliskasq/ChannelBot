@@ -463,33 +463,33 @@ def _detect_channel_v1(df, interval="4h"):
     # =============================================
     # STEP 4: Lower line — SAME SLOPE, on lowest body bottom
     # =============================================
-    # Find the lowest BODY BOTTOM strictly BETWEEN the two upper anchors.
-    # If none found, extend up to 10 candles after the right anchor.
+    # Find the lowest BODY BOTTOM strictly between the two upper anchors.
+    # If no dip found there, allow up to 10 candles RIGHT of anchor2 (toward current price).
     span_start = anchor1[0]
-    span_end_strict = anchor2[0] + 1  # between anchors inclusive
-    span_end_extended = min(n, anchor2[0] + 11)  # fallback: +10 candles
     
-    region_lows = body_bottoms[span_start:span_end_strict]
-    if len(region_lows) == 0:
-        # Fallback: extend search
-        region_lows = body_bottoms[span_start:span_end_extended]
-        if len(region_lows) == 0:
-            return None
+    # 1) Strict: between anchor1 and anchor2 inclusive
+    region_strict = body_bottoms[span_start:anchor2[0] + 1]
+    low_idx = None
+    low_price = None
+    if len(region_strict) > 0:
+        min_rel = np.argmin(region_strict)
+        low_idx = span_start + min_rel
+        low_price = float(region_strict[min_rel])
     
-    min_rel_idx = np.argmin(region_lows)
-    low_idx = span_start + min_rel_idx
-    low_price = float(region_lows[min_rel_idx])
-    
-    # If the low between anchors is same as anchor price (no real dip),
-    # try extended range
-    if low_price >= min(anchor1[1], anchor2[1]):
-        region_ext = body_bottoms[span_start:span_end_extended]
+    # 2) If no valid dip between anchors, extend 10 candles right of anchor2
+    if low_idx is None or low_price >= min(anchor1[1], anchor2[1]):
+        ext_start = anchor2[0] + 1
+        ext_end = min(n, anchor2[0] + 11)
+        region_ext = body_bottoms[ext_start:ext_end]
         if len(region_ext) > 0:
-            ext_min_idx = np.argmin(region_ext)
-            ext_price = float(region_ext[ext_min_idx])
-            if ext_price < low_price:
-                low_idx = span_start + ext_min_idx
+            ext_rel = np.argmin(region_ext)
+            ext_price = float(region_ext[ext_rel])
+            if low_idx is None or ext_price < low_price:
+                low_idx = ext_start + ext_rel
                 low_price = ext_price
+    
+    if low_idx is None:
+        return None
     
     lower_int = np.log(low_price) - slope * low_idx
     
@@ -761,30 +761,31 @@ def _detect_channel_v1_1(df, interval="4h"):
             return None
         upper_touches = _touches(swing_highs_b, slope, upper_int, 0.015)
 
-    # STEP 4: Lower line — same slope, lowest body bottom between anchors
-    # First try strictly between anchors, fallback to +10 candles after right anchor
+    # STEP 4: Lower line — same slope, lowest body bottom
+    # Strict: between anchors. If no dip → +10 candles right of anchor2.
     span_start = anchor1[0]
-    span_end_strict = anchor2[0] + 1
-    span_end_extended = min(n, anchor2[0] + 11)
     
-    region_lows = body_bottoms[span_start:span_end_strict]
-    if len(region_lows) == 0:
-        region_lows = body_bottoms[span_start:span_end_extended]
-        if len(region_lows) == 0:
-            return None
+    region_strict = body_bottoms[span_start:anchor2[0] + 1]
+    low_idx = None
+    low_price = None
+    if len(region_strict) > 0:
+        min_rel = np.argmin(region_strict)
+        low_idx = span_start + min_rel
+        low_price = float(region_strict[min_rel])
     
-    min_rel_idx = np.argmin(region_lows)
-    low_idx = span_start + min_rel_idx
-    low_price = float(region_lows[min_rel_idx])
-    
-    if low_price >= min(anchor1[1], anchor2[1]):
-        region_ext = body_bottoms[span_start:span_end_extended]
+    if low_idx is None or low_price >= min(anchor1[1], anchor2[1]):
+        ext_start = anchor2[0] + 1
+        ext_end = min(n, anchor2[0] + 11)
+        region_ext = body_bottoms[ext_start:ext_end]
         if len(region_ext) > 0:
-            ext_min_idx = np.argmin(region_ext)
-            ext_price = float(region_ext[ext_min_idx])
-            if ext_price < low_price:
-                low_idx = span_start + ext_min_idx
+            ext_rel = np.argmin(region_ext)
+            ext_price = float(region_ext[ext_rel])
+            if low_idx is None or ext_price < low_price:
+                low_idx = ext_start + ext_rel
                 low_price = ext_price
+    
+    if low_idx is None:
+        return None
     
     lower_int = np.log(low_price) - slope * low_idx
 
