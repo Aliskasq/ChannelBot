@@ -135,6 +135,40 @@ def find_swing_highs_body(df, min_radius=1, max_radius=6, min_distance=3):
     return result
 
 
+def find_swing_lows_body(df, min_radius=1, max_radius=6, min_distance=3):
+    """Same as find_swing_lows but uses body bottoms (min(open, close)) instead of adaptive lows."""
+    prices = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    n = len(prices)
+    candidates = []
+    for i in range(1, n - 1):
+        best_radius = 0
+        for r in range(min_radius, min(max_radius + 1, min(i + 1, n - i))):
+            left = prices[max(0, i - r):i]
+            right = prices[i + 1:min(n, i + r + 1)]
+            if len(left) == 0 or len(right) == 0:
+                break
+            if prices[i] > np.min(left) or prices[i] > np.min(right):
+                break
+            best_radius = r
+        if best_radius < min_radius:
+            continue
+        has_left_slope = any(prices[j] > prices[i] for j in range(max(0, i - best_radius), i))
+        has_right_slope = any(prices[j] > prices[i] for j in range(i + 1, min(n, i + best_radius + 1)))
+        if has_left_slope and has_right_slope:
+            if i + 1 < n and prices[i + 1] == prices[i]:
+                continue
+            candidates.append((i, float(prices[i]), best_radius))
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: x[1])
+    result = []
+    for idx, price, _ in candidates:
+        if all(abs(idx - r[0]) >= min_distance for r in result):
+            result.append((idx, price))
+    result.sort(key=lambda x: x[0])
+    return result
+
+
 def find_swing_lows(df, min_radius=1, max_radius=6, min_distance=3):
     """Hybrid valley finder: flexible radius (1-6) + prominence sort.
     Uses adaptive prices (low, but body when wick > 3x body)."""
@@ -258,6 +292,18 @@ def detect_channel(df, interval="4h"):
     if r4 is not None:
         r4["algorithm"] = 4
         all_results.append(r4)
+    
+    r5 = _detect_channel_v5(df, interval=interval)
+    if r5 is not None:
+        if _validate_channel_bodies(df, r5):
+            r5["algorithm"] = 5
+            all_results.append(r5)
+    
+    r5_1 = _detect_channel_v5_1(df, interval=interval)
+    if r5_1 is not None:
+        if _validate_channel_bodies(df, r5_1):
+            r5_1["algorithm"] = 5.1
+            all_results.append(r5_1)
     
     if not all_results:
         return None
@@ -1498,6 +1544,154 @@ def _detect_channel_v4(df):
                 "anchors": {"lower": [a, b], "upper": [(high_idx, high_price)]},
             }
     
+    return None
+
+
+def _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swing_lows_list, use_bodies=True):
+    """
+    Helper: build ascending channel from two lower anchors.
+    Upper anchor = highest body top (or high) between anchors.
+    Returns channel dict or None.
+    """
+    n = len(df)
+    slope, lower_int = _log_line(anchor1[0], anchor1[1], anchor2[0], anchor2[1])
+
+    if slope <= 0 or abs(slope) > 0.03:
+        return None
+
+    # Upper anchor: highest body_top (algo 5) or high (algo 5.1) between anchors
+    prices_for_upper = body_tops if use_bodies else df["high"].values.astype(float)
+    region = prices_for_upper[anchor1[0]:anchor2[0] + 1]
+    if len(region) == 0:
+        return None
+    max_rel = np.argmax(region)
+    high_idx = anchor1[0] + max_rel
+    high_price = float(region[max_rel])
+
+    # Fallback: +10 candles right of anchor2
+    if high_price <= max(anchor1[1], anchor2[1]):
+        ext_start = anchor2[0] + 1
+        ext_end = min(n, anchor2[0] + 11)
+        region_ext = prices_for_upper[ext_start:ext_end]
+        if len(region_ext) > 0:
+            ext_rel = np.argmax(region_ext)
+            ext_price = float(region_ext[ext_rel])
+            if ext_price > high_price:
+                high_idx = ext_start + ext_rel
+                high_price = ext_price
+
+    upper_int = np.log(high_price) - slope * high_idx
+
+    mid = (anchor1[0] + anchor2[0]) // 2
+    um = _price_at(slope, upper_int, mid)
+    lm = _price_at(slope, lower_int, mid)
+    if um <= lm:
+        return None
+    width_pct = (um - lm) / lm * 100
+    if width_pct < 1.0:
+        return None
+
+    lower_touches = _touches(swing_lows_list, slope, lower_int, 0.015)
+    if use_bodies:
+        swing_highs_for_touch = find_swing_highs_body(df)
+    else:
+        swing_highs_for_touch = find_swing_highs(df)
+    upper_touches = _touches(swing_highs_for_touch, slope, upper_int, 0.015)
+
+    last_idx = n - 1
+    last_close = float(df["close"].iloc[-1])
+    upper_now = _price_at(slope, upper_int, last_idx)
+    lower_now = _price_at(slope, lower_int, last_idx)
+    position = (last_close - lower_now) / (upper_now - lower_now) * 100 if upper_now > lower_now else 50.0
+
+    return {
+        "direction": _direction(slope),
+        "upper_line": {"slope": slope, "intercept": upper_int, "points": upper_touches},
+        "lower_line": {"slope": slope, "intercept": lower_int, "points": lower_touches},
+        "width_pct": width_pct,
+        "price_position": position,
+        "breakout": None,
+        "second_channel": None,
+        "predicted_channel": None,
+        "touches_upper": len(upper_touches),
+        "touches_lower": len(lower_touches),
+        "swing_highs": find_swing_highs(df),
+        "swing_lows": swing_lows_list,
+        "anchors": {
+            "upper": [(high_idx, high_price)],
+            "lower": [anchor1, anchor2],
+        },
+    }
+
+
+def _detect_channel_v5(df, interval="4h"):
+    """
+    Algorithm 5 — Ascending channel from body bottoms.
+    Two anchors on body-bottom swing lows (ascending: A2 > A1).
+    Upper anchor = highest body top between the two lower anchors.
+    Tries pairs from right to left to find the most recent valid channel.
+    """
+    n = len(df)
+    if n < 50:
+        return None
+
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+
+    swing_lows_b = find_swing_lows_body(df)
+    if len(swing_lows_b) < 2:
+        return None
+
+    lookback_start = max(0, n - 200)
+    relevant_lows = [(i, p) for i, p in swing_lows_b if i >= lookback_start]
+    if len(relevant_lows) < 2:
+        return None
+
+    # Try pairs from RIGHT to LEFT: anchor2 is rightmost, anchor1 is to its left & lower
+    # This finds the most recent ascending channel first
+    for j in range(len(relevant_lows) - 1, 0, -1):
+        anchor2 = relevant_lows[j]
+        for k in range(j - 1, -1, -1):
+            anchor1 = relevant_lows[k]
+            # Ascending: anchor1 must be lower than anchor2
+            if anchor1[1] >= anchor2[1]:
+                continue
+            ch = _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swing_lows_b, use_bodies=True)
+            if ch and _validate_channel_bodies(df, ch):
+                return ch
+    return None
+
+
+def _detect_channel_v5_1(df, interval="4h"):
+    """
+    Algorithm 5.1 — Same as algo 5, but anchors on candle lows (wicks)
+    and upper anchor on candle high. Fallback when algo 5 fails.
+    """
+    n = len(df)
+    if n < 50:
+        return None
+
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+
+    swing_lows_reg = find_swing_lows(df)
+    if len(swing_lows_reg) < 2:
+        return None
+
+    lookback_start = max(0, n - 200)
+    relevant_lows = [(i, p) for i, p in swing_lows_reg if i >= lookback_start]
+    if len(relevant_lows) < 2:
+        return None
+
+    for j in range(len(relevant_lows) - 1, 0, -1):
+        anchor2 = relevant_lows[j]
+        for k in range(j - 1, -1, -1):
+            anchor1 = relevant_lows[k]
+            if anchor1[1] >= anchor2[1]:
+                continue
+            ch = _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swing_lows_reg, use_bodies=False)
+            if ch and _validate_channel_bodies(df, ch):
+                return ch
     return None
 
 
