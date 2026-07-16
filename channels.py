@@ -293,17 +293,21 @@ def detect_channel(df, interval="4h"):
         r4["algorithm"] = 4
         all_results.append(r4)
     
+    # Algo 5 family: priority 5 → 5.1 → 5.2 (only first successful)
     r5 = _detect_channel_v5(df, interval=interval)
-    if r5 is not None:
-        if _validate_channel_bodies(df, r5):
-            r5["algorithm"] = 5
-            all_results.append(r5)
-    
-    r5_1 = _detect_channel_v5_1(df, interval=interval)
-    if r5_1 is not None:
-        if _validate_channel_bodies(df, r5_1):
+    if r5 is not None and _validate_channel_bodies(df, r5):
+        r5["algorithm"] = 5
+        all_results.append(r5)
+    else:
+        r5_1 = _detect_channel_v5_1(df, interval=interval)
+        if r5_1 is not None and _validate_channel_bodies(df, r5_1):
             r5_1["algorithm"] = 5.1
             all_results.append(r5_1)
+        else:
+            r5_2 = _detect_channel_v5_2(df, interval=interval)
+            if r5_2 is not None and _validate_channel_bodies(df, r5_2):
+                r5_2["algorithm"] = 5.2
+                all_results.append(r5_2)
     
     if not all_results:
         return None
@@ -1691,6 +1695,99 @@ def _detect_channel_v5_1(df, interval="4h"):
                 continue
             ch = _build_channel_from_lows(df, anchor1, anchor2, swing_lows_reg, use_bodies=False)
             if ch and _validate_channel_bodies(df, ch):
+                return ch
+    return None
+
+
+def _detect_channel_v5_2(df, interval="4h"):
+    """
+    Algorithm 5.2 — Fallback ascending channel.
+    Same lower anchors as algo 5 (body bottoms), but if upper anchor between
+    anchors causes line to cross bodies, search for upper anchor AFTER anchor2
+    (closer to current price) — highest body top in the 10 candles after anchor2.
+    """
+    n = len(df)
+    if n < 50:
+        return None
+
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+
+    swing_lows_b = find_swing_lows_body(df)
+    if len(swing_lows_b) < 2:
+        return None
+
+    lookback_start = max(0, n - 120)
+    relevant_lows = [(i, p) for i, p in swing_lows_b if i >= lookback_start]
+    if len(relevant_lows) < 2:
+        return None
+
+    for k in range(len(relevant_lows) - 1):
+        anchor1 = relevant_lows[k]
+        for j in range(k + 1, len(relevant_lows)):
+            anchor2 = relevant_lows[j]
+            if anchor2[1] <= anchor1[1]:
+                continue
+
+            slope, lower_int = _log_line(anchor1[0], anchor1[1], anchor2[0], anchor2[1])
+            if slope <= 0 or abs(slope) > 0.03:
+                continue
+
+            # Search for upper anchor AFTER anchor2 (toward current price)
+            ext_start = anchor2[0] + 1
+            ext_end = min(n, anchor2[0] + 11)
+            if ext_start >= n:
+                continue
+            region = body_tops[ext_start:ext_end]
+            if len(region) == 0:
+                continue
+            max_rel = np.argmax(region)
+            high_idx = ext_start + max_rel
+            high_price = float(region[max_rel])
+
+            if high_price <= max(anchor1[1], anchor2[1]):
+                continue
+
+            upper_int = np.log(high_price) - slope * high_idx
+
+            mid = (anchor1[0] + anchor2[0]) // 2
+            um = _price_at(slope, upper_int, mid)
+            lm = _price_at(slope, lower_int, mid)
+            if um <= lm:
+                continue
+            width_pct = (um - lm) / lm * 100
+            if width_pct < 1.0:
+                continue
+
+            lower_touches = _touches(swing_lows_b, slope, lower_int, 0.015)
+            swing_highs_b = find_swing_highs_body(df)
+            upper_touches = _touches(swing_highs_b, slope, upper_int, 0.015)
+
+            last_idx = n - 1
+            last_close = float(df["close"].iloc[-1])
+            upper_now = _price_at(slope, upper_int, last_idx)
+            lower_now = _price_at(slope, lower_int, last_idx)
+            position = (last_close - lower_now) / (upper_now - lower_now) * 100 if upper_now > lower_now else 50.0
+
+            ch = {
+                "direction": _direction(slope),
+                "upper_line": {"slope": slope, "intercept": upper_int, "points": upper_touches},
+                "lower_line": {"slope": slope, "intercept": lower_int, "points": lower_touches},
+                "width_pct": width_pct,
+                "price_position": position,
+                "breakout": None,
+                "second_channel": None,
+                "predicted_channel": None,
+                "touches_upper": len(upper_touches),
+                "touches_lower": len(lower_touches),
+                "swing_highs": find_swing_highs(df),
+                "swing_lows": swing_lows_b,
+                "anchors": {
+                    "upper": [(high_idx, high_price)],
+                    "lower": [anchor1, anchor2],
+                },
+            }
+            if _validate_channel_bodies(df, ch):
                 return ch
     return None
 
