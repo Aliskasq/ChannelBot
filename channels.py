@@ -327,13 +327,31 @@ def detect_channel(df, interval="4h"):
 
 
 def _channels_similar(ch1, ch2, n):
-    """Check if two channels are too similar (same plane). 
-    Compare upper/lower line prices at a few points — if overlap > 80%, skip."""
-    mid = n // 2
-    points = [n // 4, mid, 3 * n // 4]
+    """Check if two channels are too similar or one contains the other.
+    Checks overlap in the anchor region of both channels.
+    If overlap >= 85% of EITHER channel → duplicate."""
+    # Find the actual span where both channels are active
+    a1_all = ch1.get("anchors", {})
+    a2_all = ch2.get("anchors", {})
+    a1_pts = a1_all.get("lower", []) + a1_all.get("upper", [])
+    a2_pts = a2_all.get("lower", []) + a2_all.get("upper", [])
+    
+    if a1_pts and a2_pts:
+        # Check from the later first anchor to the end
+        start = max(min(int(a[0]) for a in a1_pts), min(int(a[0]) for a in a2_pts))
+    else:
+        start = n // 2
+    
+    # Check at 3 points in the active region
+    span = n - start
+    if span < 3:
+        return False
+    points = [start + span // 4, start + span // 2, start + 3 * span // 4]
     
     overlap_count = 0
     for p in points:
+        if p >= n:
+            continue
         u1 = _price_at(ch1["upper_line"]["slope"], ch1["upper_line"]["intercept"], p)
         l1 = _price_at(ch1["lower_line"]["slope"], ch1["lower_line"]["intercept"], p)
         u2 = _price_at(ch2["upper_line"]["slope"], ch2["upper_line"]["intercept"], p)
@@ -344,19 +362,17 @@ def _channels_similar(ch1, ch2, n):
         if h1 <= 0 or h2 <= 0:
             continue
         
-        # Overlap range
         overlap_top = min(u1, u2)
         overlap_bot = max(l1, l2)
         overlap = max(0, overlap_top - overlap_bot)
         
-        # Overlap as fraction of both channels
         frac1 = overlap / h1
         frac2 = overlap / h2
         
-        if frac1 > 0.80 and frac2 > 0.80:
+        # Duplicate if EITHER channel is 85%+ contained in the other
+        if frac1 > 0.85 or frac2 > 0.85:
             overlap_count += 1
     
-    # If overlapping at most points → similar
     return overlap_count >= 2
 
 
