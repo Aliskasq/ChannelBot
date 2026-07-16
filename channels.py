@@ -1547,20 +1547,24 @@ def _detect_channel_v4(df):
     return None
 
 
-def _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swing_lows_list, use_bodies=True):
+def _build_channel_from_lows(df, anchor1, anchor2, swing_lows_list, use_bodies=True):
     """
     Helper: build ascending channel from two lower anchors.
-    Upper anchor = highest body top (or high) between anchors.
+    anchor1 (LEFT) lower price, anchor2 (RIGHT, toward price) higher price.
+    Upper anchor = highest body top (use_bodies=True) or high (False) between anchors.
     Returns channel dict or None.
     """
     n = len(df)
     slope, lower_int = _log_line(anchor1[0], anchor1[1], anchor2[0], anchor2[1])
 
+    # Must be ascending
     if slope <= 0 or abs(slope) > 0.03:
         return None
 
-    # Upper anchor: highest body_top (algo 5) or high (algo 5.1) between anchors
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
     prices_for_upper = body_tops if use_bodies else df["high"].values.astype(float)
+
+    # Upper anchor: strictly between anchors first
     region = prices_for_upper[anchor1[0]:anchor2[0] + 1]
     if len(region) == 0:
         return None
@@ -1592,10 +1596,7 @@ def _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swin
         return None
 
     lower_touches = _touches(swing_lows_list, slope, lower_int, 0.015)
-    if use_bodies:
-        swing_highs_for_touch = find_swing_highs_body(df)
-    else:
-        swing_highs_for_touch = find_swing_highs(df)
+    swing_highs_for_touch = find_swing_highs_body(df) if use_bodies else find_swing_highs(df)
     upper_touches = _touches(swing_highs_for_touch, slope, upper_int, 0.015)
 
     last_idx = n - 1
@@ -1627,36 +1628,34 @@ def _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swin
 def _detect_channel_v5(df, interval="4h"):
     """
     Algorithm 5 — Ascending channel from body bottoms.
-    Two anchors on body-bottom swing lows (ascending: A2 > A1).
+    Two anchors on body-bottom swing lows: anchor1 (left, LOWER), anchor2 (right, HIGHER).
     Upper anchor = highest body top between the two lower anchors.
-    Tries pairs from right to left to find the most recent valid channel.
+    Search window: last 120 candles. Iterates from farthest pair to closest.
+    If channel cuts through bodies → try next pair closer to price.
     """
     n = len(df)
     if n < 50:
         return None
 
-    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
-    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
-
     swing_lows_b = find_swing_lows_body(df)
     if len(swing_lows_b) < 2:
         return None
 
-    lookback_start = max(0, n - 200)
+    lookback_start = max(0, n - 120)
     relevant_lows = [(i, p) for i, p in swing_lows_b if i >= lookback_start]
     if len(relevant_lows) < 2:
         return None
 
-    # Try pairs from RIGHT to LEFT: anchor2 is rightmost, anchor1 is to its left & lower
-    # This finds the most recent ascending channel first
-    for j in range(len(relevant_lows) - 1, 0, -1):
-        anchor2 = relevant_lows[j]
-        for k in range(j - 1, -1, -1):
-            anchor1 = relevant_lows[k]
-            # Ascending: anchor1 must be lower than anchor2
-            if anchor1[1] >= anchor2[1]:
+    # Iterate from FARTHEST pair to CLOSEST
+    # anchor1 = left (lower price), anchor2 = right toward price (higher price)
+    for k in range(len(relevant_lows) - 1):
+        anchor1 = relevant_lows[k]
+        for j in range(k + 1, len(relevant_lows)):
+            anchor2 = relevant_lows[j]
+            # anchor2 must be HIGHER than anchor1 (ascending)
+            if anchor2[1] <= anchor1[1]:
                 continue
-            ch = _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swing_lows_b, use_bodies=True)
+            ch = _build_channel_from_lows(df, anchor1, anchor2, swing_lows_b, use_bodies=True)
             if ch and _validate_channel_bodies(df, ch):
                 return ch
     return None
@@ -1665,31 +1664,30 @@ def _detect_channel_v5(df, interval="4h"):
 def _detect_channel_v5_1(df, interval="4h"):
     """
     Algorithm 5.1 — Same as algo 5, but anchors on candle lows (wicks)
-    and upper anchor on candle high. Fallback when algo 5 fails.
+    and upper anchor on candle high (wick).
+    Fallback when algo 5 doesn't find a valid channel.
     """
     n = len(df)
     if n < 50:
         return None
 
-    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
-    body_bottoms = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
-
     swing_lows_reg = find_swing_lows(df)
     if len(swing_lows_reg) < 2:
         return None
 
-    lookback_start = max(0, n - 200)
+    lookback_start = max(0, n - 120)
     relevant_lows = [(i, p) for i, p in swing_lows_reg if i >= lookback_start]
     if len(relevant_lows) < 2:
         return None
 
-    for j in range(len(relevant_lows) - 1, 0, -1):
-        anchor2 = relevant_lows[j]
-        for k in range(j - 1, -1, -1):
-            anchor1 = relevant_lows[k]
-            if anchor1[1] >= anchor2[1]:
+    for k in range(len(relevant_lows) - 1):
+        anchor1 = relevant_lows[k]
+        for j in range(k + 1, len(relevant_lows)):
+            anchor2 = relevant_lows[j]
+            # anchor2 must be HIGHER (ascending)
+            if anchor2[1] <= anchor1[1]:
                 continue
-            ch = _build_ascending_channel(df, anchor1, anchor2, body_tops, body_bottoms, swing_lows_reg, use_bodies=False)
+            ch = _build_channel_from_lows(df, anchor1, anchor2, swing_lows_reg, use_bodies=False)
             if ch and _validate_channel_bodies(df, ch):
                 return ch
     return None
