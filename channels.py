@@ -357,8 +357,9 @@ def _channels_similar(ch1, ch2, n):
 
 
 def _validate_channel_bodies(df, ch):
-    """Validate that no candle body protrudes beyond channel lines AFTER the last anchor.
-    If any body goes above upper line or below lower line → channel is invalid."""
+    """Validate that no candle body crosses channel lines from first anchor to current candle.
+    Anchor candles themselves are excluded (they define the lines).
+    If any other body goes above upper line or below lower line → channel is invalid."""
     n = len(df)
     body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
     body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
@@ -367,21 +368,22 @@ def _validate_channel_bodies(df, ch):
     if not all_anchors:
         return True
     
-    last_anchor = max(int(a[0]) for a in all_anchors)
+    first_anchor = min(int(a[0]) for a in all_anchors)
+    anchor_indices = set(int(a[0]) for a in all_anchors)
     
     us = ch["upper_line"]["slope"]
     ui = ch["upper_line"]["intercept"]
     ls = ch["lower_line"]["slope"]
     li = ch["lower_line"]["intercept"]
     
-    # Check every candle AFTER the last anchor to the end
-    for i in range(last_anchor + 1, n):
+    # Check from first anchor to end, skip anchor candles themselves
+    for i in range(first_anchor, n):
+        if i in anchor_indices:
+            continue
         upper_at = _price_at(us, ui, i)
         lower_at = _price_at(ls, li, i)
-        # Body top above upper line
         if body_tops[i] > upper_at * 1.003:
             return False
-        # Body bottom below lower line
         if body_bots[i] < lower_at * 0.997:
             return False
     
