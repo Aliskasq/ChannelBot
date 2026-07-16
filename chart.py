@@ -297,7 +297,7 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
                                 markeredgecolor='white', markeredgewidth=1.5, zorder=8)
                 for idx, price in anchors.get("lower", []):
                     if 0 <= idx < view_limit:
-                        ax.plot(idx, price, 'D', color='#FFD700', markersize=12,
+                        ax.plot(idx, price, 'D', color='#00BFFF', markersize=12,
                                 markeredgecolor='white', markeredgewidth=1.5, zorder=8)
             ch2 = channel.get("second_channel")
             if ch2:
