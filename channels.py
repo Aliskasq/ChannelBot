@@ -288,10 +288,16 @@ def detect_channel(df, interval="4h"):
         r3["algorithm"] = 3
         all_results.append(r3)
     
+    # Algo 4 family: priority 4 → 4.1
     r4 = _detect_channel_v4(df)
     if r4 is not None:
         r4["algorithm"] = 4
         all_results.append(r4)
+    else:
+        r4_1 = _detect_channel_v4_1(df)
+        if r4_1 is not None:
+            r4_1["algorithm"] = 4.1
+            all_results.append(r4_1)
     
     # Algo 5 family: priority 5 → 5.1 → 5.2 (only first successful)
     r5 = _detect_channel_v5(df, interval=interval)
@@ -1373,15 +1379,10 @@ def _detect_channel_v3(df):
 
 def _detect_channel_v4(df):
     """
-    Algorithm 4 — Ascending channel from body lows.
-    
-    1. Find 2 anchor points on body BOTTOMS (swing lows), point A < point B (ascending)
-    2. Lower line through these 2 anchors (A is lower, B is higher)
-    3. Upper line = same slope, on highest body TOP between anchors
-    4. Min 15 candles between lower anchors
-    5. Upper anchor: if wick > 2x body OR > 10% of body_top → use body_top
-    6. Validate: no body protrudes beyond lines from anchors to end of data
-    7. Start from rightmost (most recent) pairs, work backwards
+    Algorithm 4 — Ascending channel from body lows (relaxed).
+    Same as algo 4.1 but with relaxed validation: channel is valid if
+    85%+ of candles from first anchor to end have bodies inside the channel.
+    This finds broader channels that cover most of the price action.
     """
     n = len(df)
     if n < 50:
@@ -1511,7 +1512,193 @@ def _detect_channel_v4(df):
             if width_pct < 1.0 or width_pct > 100.0:
                 continue
             
-            # Full validation: no body protrudes from 7 candles before first anchor to end
+            # Validation: 
+            # 1) Lines CANNOT cross candle bodies (hard rule)
+            # 2) 85%+ of candles must be fully inside the channel
+            check_start = span_s
+            total_candles = n - check_start
+            outside_count = 0
+            lines_cross = False
+            for k in range(check_start, n):
+                u_at = _price_at(slope, upper_int, k)
+                l_at = _price_at(slope, lower_int, k)
+                bt = body_tops[k]
+                bb = body_bots[k]
+                # Line crosses body = line is between body_bot and body_top
+                if u_at > bb and u_at < bt:
+                    lines_cross = True
+                    break
+                if l_at > bb and l_at < bt:
+                    lines_cross = True
+                    break
+                # Body fully outside channel (above or below) — allowed up to 15%
+                if bb > u_at * 1.003 or bt < l_at * 0.997:
+                    outside_count += 1
+            if lines_cross:
+                continue
+            if total_candles > 0 and (total_candles - outside_count) / total_candles < 0.85:
+                continue
+            
+            upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
+            lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
+            
+            # Break detection
+            break_idx = None
+            breakout = None
+            for bi in range(b[0] + 1, n):
+                if body_tops[bi] > _price_at(slope, upper_int, bi) * 1.003:
+                    break_idx = bi
+                    breakout = "up"
+                    break
+            if break_idx is None:
+                for bi in range(b[0] + 1, n):
+                    if body_bots[bi] < _price_at(slope, lower_int, bi) * 0.997:
+                        break_idx = bi
+                        breakout = "down"
+                        break
+            
+            if break_idx is not None:
+                upper_touches = [(ti, tp) for ti, tp in upper_touches if ti <= break_idx]
+                lower_touches = [(ti, tp) for ti, tp in lower_touches if ti <= break_idx]
+            
+            last_idx = n - 1
+            last_close = float(df["close"].iloc[-1])
+            upper_now = _price_at(slope, upper_int, last_idx)
+            lower_now = _price_at(slope, lower_int, last_idx)
+            position = (last_close - lower_now) / (upper_now - lower_now) * 100 if upper_now > lower_now else 50.0
+            
+            return {
+                "direction": _direction(slope),
+                "upper_line": {"slope": slope, "intercept": upper_int, "points": upper_touches},
+                "lower_line": {"slope": slope, "intercept": lower_int, "points": lower_touches},
+                "width_pct": width_pct, "price_position": position,
+                "breakout": breakout, "second_channel": None,
+                "predicted_channel": None,
+                "touches_upper": len(upper_touches), "touches_lower": len(lower_touches),
+                "swing_highs": swing_highs, "swing_lows": swing_lows,
+                "anchors": {"lower": [a, b], "upper": [(high_idx, high_price)]},
+            }
+    
+    return None
+
+
+def _detect_channel_v4_1(df):
+    """
+    Algorithm 4.1 — Ascending channel from body lows (strict).
+    Same as algo 4 but with STRICT validation: zero body violations allowed.
+    Fallback when algo 4 (relaxed 85%) finds a channel but strict is preferred.
+    """
+    n = len(df)
+    if n < 50:
+        return None
+    
+    swing_highs = find_swing_highs(df)
+    swing_lows = find_swing_lows(df)
+    
+    if len(swing_lows) < 2:
+        return None
+    
+    body_tops = np.maximum(df["open"].values.astype(float), df["close"].values.astype(float))
+    body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
+    highs = df["high"].values.astype(float)
+    
+    sorted_lows = sorted(
+        [(i, p) for i, p in swing_lows if i < n - 2],
+        key=lambda x: x[0], reverse=True
+    )
+    
+    for i in range(len(sorted_lows)):
+        for j in range(i + 1, len(sorted_lows)):
+            b_raw = sorted_lows[i]
+            a_raw = sorted_lows[j]
+            
+            if a_raw[0] > b_raw[0]:
+                a_raw, b_raw = b_raw, a_raw
+            
+            if b_raw[0] - a_raw[0] < 15:
+                continue
+            
+            a_orig_price = float(body_bots[a_raw[0]])
+            b_orig_price = float(body_bots[b_raw[0]])
+            
+            a_adj_idx, a_adj_price = _adjust_lower_anchor(df, a_raw[0], a_orig_price)
+            b_adj_idx, b_adj_price = _adjust_lower_anchor(df, b_raw[0], b_orig_price)
+            
+            candidates = []
+            if a_adj_idx != a_raw[0] or b_adj_idx != b_raw[0]:
+                candidates.append((a_adj_idx, a_adj_price, b_adj_idx, b_adj_price))
+            candidates.append((a_raw[0], a_orig_price, b_raw[0], b_orig_price))
+            
+            found = False
+            for a_idx, a_price, b_idx, b_price in candidates:
+                if b_idx - a_idx < 15:
+                    continue
+                if a_price >= b_price:
+                    continue
+                a = (a_idx, a_price)
+                b = (b_idx, b_price)
+                found = True
+                break
+            
+            if not found:
+                continue
+            
+            slope, lower_int = _log_line(a[0], a[1], b[0], b[1])
+            
+            if slope <= 0 or abs(slope) > 0.03:
+                continue
+            
+            span_s = a[0]
+            span_e = b[0] + 1
+            
+            anchor_tolerance = {a[0] - 1, a[0], a[0] + 1, b[0] - 1, b[0], b[0] + 1}
+            lower_ok = True
+            for k in range(span_s, min(n, span_e)):
+                if k in anchor_tolerance:
+                    continue
+                l_at = _price_at(slope, lower_int, k)
+                if l_at > body_bots[k] and l_at < body_tops[k]:
+                    lower_ok = False
+                    break
+            if not lower_ok:
+                continue
+            
+            region_tops = body_tops[span_s:min(n, span_e)]
+            if len(region_tops) == 0:
+                continue
+            hi = np.argmax(region_tops)
+            high_idx = span_s + hi
+            high_price = float(region_tops[hi])
+            
+            actual_high = float(highs[high_idx])
+            wick = actual_high - high_price
+            body_size = float(body_tops[high_idx] - body_bots[high_idx])
+            body_safe = body_size if body_size > 0 else 1e10
+            
+            if wick <= body_safe * 2.0 and wick <= high_price * 0.10:
+                high_price = actual_high
+            
+            upper_int = np.log(high_price) - slope * high_idx
+            
+            upper_ok = True
+            for k in range(span_s, min(n, span_e)):
+                u_at = _price_at(slope, upper_int, k)
+                if u_at < body_tops[k] and u_at > body_bots[k]:
+                    upper_ok = False
+                    break
+            if not upper_ok:
+                continue
+            
+            mid = (a[0] + b[0]) // 2
+            um = _price_at(slope, upper_int, mid)
+            lm = _price_at(slope, lower_int, mid)
+            if lm >= um:
+                continue
+            width_pct = (um - lm) / lm * 100
+            if width_pct < 1.0 or width_pct > 100.0:
+                continue
+            
+            # STRICT validation: zero body violations
             full_valid = True
             check_start = max(0, span_s - 7)
             for k in range(check_start, n):
@@ -1529,7 +1716,6 @@ def _detect_channel_v4(df):
             upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
             lower_touches = _touches(swing_lows, slope, lower_int, 0.015)
             
-            # Break detection
             break_idx = None
             breakout = None
             for bi in range(b[0] + 1, n):
