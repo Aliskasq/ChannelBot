@@ -321,12 +321,28 @@ def detect_channel(df, interval="4h"):
     # Primary = first valid (priority order: 1, 2, 3)
     primary = all_results[0]
     
-    # Filter out extra channels that are too similar to primary
+    # Filter extras: no duplicates vs primary or each other
+    # Allow max 1 extra with different direction from primary
     n = len(df)
     extras = []
+    has_opposite = False
     for ec in all_results[1:]:
-        if not _channels_similar(primary, ec, n):
-            extras.append(ec)
+        if _channels_similar(primary, ec, n):
+            continue
+        # Also check against already accepted extras
+        dup_of_extra = False
+        for accepted in extras:
+            if _channels_similar(accepted, ec, n):
+                dup_of_extra = True
+                break
+        if dup_of_extra:
+            continue
+        # Only one channel with opposite direction allowed
+        if ec.get("direction") != primary.get("direction"):
+            if has_opposite:
+                continue
+            has_opposite = True
+        extras.append(ec)
     
     primary["extra_channels"] = extras
     return primary
