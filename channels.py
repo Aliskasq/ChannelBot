@@ -334,8 +334,12 @@ def detect_channel(df, interval="4h"):
 
 def _channels_similar(ch1, ch2, n):
     """Check if two channels are too similar or one contains the other.
+    Channels with different directions (ascending vs descending) are never duplicates.
     Checks overlap in the anchor region of both channels.
     If overlap >= 85% of EITHER channel → duplicate."""
+    # Different directions → always allowed together
+    if ch1.get("direction") != ch2.get("direction"):
+        return False
     # Find the actual span where both channels are active
     a1_all = ch1.get("anchors", {})
     a2_all = ch2.get("anchors", {})
