@@ -1398,20 +1398,17 @@ def _detect_channel_v4(df):
     body_bots = np.minimum(df["open"].values.astype(float), df["close"].values.astype(float))
     highs = df["high"].values.astype(float)
     
-    # Sort lows by index descending (most recent first)
+    # Sort lows by index ascending (farthest first) — covers more candles for 85% rule
     # Exclude current and previous candle
     sorted_lows = sorted(
         [(i, p) for i, p in swing_lows if i < n - 2],
-        key=lambda x: x[0], reverse=True
+        key=lambda x: x[0]
     )
     
-    for i in range(len(sorted_lows)):
+    for i in range(len(sorted_lows) - 1):
         for j in range(i + 1, len(sorted_lows)):
-            b_raw = sorted_lows[i]   # right (recent) = point B (higher)
-            a_raw = sorted_lows[j]   # left (older) = point A (lower)
-            
-            if a_raw[0] > b_raw[0]:
-                a_raw, b_raw = b_raw, a_raw
+            a_raw = sorted_lows[i]   # left (older) = point A (lower)
+            b_raw = sorted_lows[j]   # right (recent) = point B (higher)
             
             # Min 15 candles between anchors
             if b_raw[0] - a_raw[0] < 15:
@@ -1509,34 +1506,38 @@ def _detect_channel_v4(df):
             if lm >= um:
                 continue
             width_pct = (um - lm) / lm * 100
-            if width_pct < 1.0 or width_pct > 100.0:
+            if width_pct < 1.0 or width_pct > 50.0:
                 continue
             
-            # Validation: 
-            # 1) Lines CANNOT cross candle bodies (hard rule)
-            # 2) 85%+ of candles must be fully inside the channel
-            check_start = span_s
-            total_candles = n - check_start
-            outside_count = 0
+            # Validation:
+            # 1) From first anchor to end: lines CANNOT cross candle bodies (hard rule)
+            # 2) 85%+ of ALL candles (from start of chart) must be inside the channel
+            #    The 15% allowance covers candles at the beginning before the channel
+            
+            # Step 1: no crossing from first anchor onward
             lines_cross = False
-            for k in range(check_start, n):
+            for k in range(span_s, n):
                 u_at = _price_at(slope, upper_int, k)
                 l_at = _price_at(slope, lower_int, k)
                 bt = body_tops[k]
                 bb = body_bots[k]
-                # Line crosses body = line is between body_bot and body_top
                 if u_at > bb and u_at < bt:
                     lines_cross = True
                     break
                 if l_at > bb and l_at < bt:
                     lines_cross = True
                     break
-                # Body fully outside channel (above or below) — allowed up to 15%
-                if bb > u_at * 1.003 or bt < l_at * 0.997:
-                    outside_count += 1
             if lines_cross:
                 continue
-            if total_candles > 0 and (total_candles - outside_count) / total_candles < 0.85:
+            
+            # Step 2: 85%+ of all candles must be fully inside
+            outside_count = 0
+            for k in range(n):
+                u_at = _price_at(slope, upper_int, k)
+                l_at = _price_at(slope, lower_int, k)
+                if body_tops[k] > u_at * 1.003 or body_bots[k] < l_at * 0.997:
+                    outside_count += 1
+            if (n - outside_count) / n < 0.85:
                 continue
             
             upper_touches = _touches(swing_highs, slope, upper_int, 0.015)
