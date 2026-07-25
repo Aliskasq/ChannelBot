@@ -141,10 +141,19 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
     _price_ceil = float(plot_df['high'].max()) * 2.0
 
     if channel:
+        # Find leftmost anchor index — don't draw lines before it
+        all_anchor_pts = channel.get("anchors", {}).get("upper", []) + channel.get("anchors", {}).get("lower", [])
+        ch_start = min((int(a[0]) for a in all_anchor_pts), default=0) if all_anchor_pts else 0
+
         upper_vals = []
         lower_vals = []
         mid_vals = []
         for i in range(view_limit):
+            if i < ch_start:
+                upper_vals.append(float('nan'))
+                lower_vals.append(float('nan'))
+                mid_vals.append(float('nan'))
+                continue
             u = _line_price_at(channel["upper_line"]["slope"],
                                channel["upper_line"]["intercept"], i)
             l = _line_price_at(channel["lower_line"]["slope"],
@@ -181,10 +190,17 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
         # Second channel (post-breakout) — orange lines
         ch2 = channel.get("second_channel")
         if ch2:
+            ch2_anchor_pts = ch2.get("anchors", {}).get("upper", []) + ch2.get("anchors", {}).get("lower", [])
+            ch2_start = min((int(a[0]) for a in ch2_anchor_pts), default=0) if ch2_anchor_pts else 0
             ch2_upper = []
             ch2_lower = []
             ch2_mid = []
             for i in range(view_limit):
+                if i < ch2_start:
+                    ch2_upper.append(float('nan'))
+                    ch2_lower.append(float('nan'))
+                    ch2_mid.append(float('nan'))
+                    continue
                 pu = _line_price_at(ch2["upper_line"]["slope"],
                                     ch2["upper_line"]["intercept"], i)
                 pl = _line_price_at(ch2["lower_line"]["slope"],
@@ -253,9 +269,11 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
         if channel:
             upper_fill = [_line_price_at(channel["upper_line"]["slope"],
                                           channel["upper_line"]["intercept"], i)
+                          if i >= ch_start else float('nan')
                           for i in range(view_limit)]
             lower_fill = [_line_price_at(channel["lower_line"]["slope"],
                                           channel["lower_line"]["intercept"], i)
+                          if i >= ch_start else float('nan')
                           for i in range(view_limit)]
             xs = list(range(view_limit))
             ax.fill_between(xs, lower_fill, upper_fill,
@@ -264,11 +282,15 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
             # Second channel fill (orange)
             ch2 = channel.get("second_channel")
             if ch2:
+                ch2_f_anchors = ch2.get("anchors", {}).get("upper", []) + ch2.get("anchors", {}).get("lower", [])
+                ch2_f_start = min((int(a[0]) for a in ch2_f_anchors), default=0) if ch2_f_anchors else 0
                 ch2_upper_fill = [_line_price_at(ch2["upper_line"]["slope"],
                                                   ch2["upper_line"]["intercept"], i)
+                                  if i >= ch2_f_start else float('nan')
                                   for i in range(view_limit)]
                 ch2_lower_fill = [_line_price_at(ch2["lower_line"]["slope"],
                                                   ch2["lower_line"]["intercept"], i)
+                                  if i >= ch2_f_start else float('nan')
                                   for i in range(view_limit)]
                 ax.fill_between(xs, ch2_lower_fill, ch2_upper_fill,
                                 color='#FFA500', alpha=0.06, zorder=1)
@@ -318,17 +340,22 @@ def draw_channel_chart(symbol, df, channel, interval="4h"):
             _extra_colors = ['#00FF00', '#FF69B4', '#FFD700']  # green, pink, gold
             for ec_idx, ec in enumerate(channel.get("extra_channels", [])):
                 ec_color = _extra_colors[ec_idx % len(_extra_colors)]
+                ec_anchor_pts = ec.get("anchors", {}).get("upper", []) + ec.get("anchors", {}).get("lower", [])
+                ec_start = min((int(a[0]) for a in ec_anchor_pts), default=0) if ec_anchor_pts else 0
                 ec_upper = [_line_price_at(ec["upper_line"]["slope"],
                                            ec["upper_line"]["intercept"], i)
+                            if i >= ec_start else float('nan')
                             for i in range(view_limit)]
                 ec_lower = [_line_price_at(ec["lower_line"]["slope"],
                                            ec["lower_line"]["intercept"], i)
+                            if i >= ec_start else float('nan')
                             for i in range(view_limit)]
-                ax.plot(range(view_limit), ec_upper, color=ec_color, linewidth=1.5,
+                ec_xs = list(range(view_limit))
+                ax.plot(ec_xs, ec_upper, color=ec_color, linewidth=1.5,
                         linestyle='--', alpha=0.7, zorder=3)
-                ax.plot(range(view_limit), ec_lower, color=ec_color, linewidth=1.5,
+                ax.plot(ec_xs, ec_lower, color=ec_color, linewidth=1.5,
                         linestyle='--', alpha=0.7, zorder=3)
-                ax.fill_between(range(view_limit), ec_lower, ec_upper,
+                ax.fill_between(ec_xs, ec_lower, ec_upper,
                                 color=ec_color, alpha=0.04, zorder=1)
                 # Extra channel anchors (smaller diamonds)
                 ec_anchors = ec.get("anchors", {})
